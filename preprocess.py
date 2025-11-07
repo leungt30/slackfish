@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-import chess
 from tqdm import tqdm
 import featureEng
 
