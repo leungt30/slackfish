@@ -1,0 +1,2 @@
+# slackfish
+Hilariously mediocre stockfish 
