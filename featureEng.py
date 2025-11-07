@@ -66,3 +66,19 @@ def piece_mobility(fen_str: str) -> int:
         else:
             black_mobility += 1
     return (white_mobility, black_mobility)
+
+def player_turn(fen_str: str) -> int:
+    board = chess.Board(fen_str)
+    return 1 if board.turn == chess.WHITE else 0
+
+def en_passant_available(fen_str: str) -> int:
+    board = chess.Board(fen_str)
+    return 1 if board.has_legal_en_passant() else 0
+
+def in_check(fen_str: str) -> int:
+    board = chess.Board(fen_str)
+    return 1 if board.is_check() else 0
+
+def castling_rights(fen_str: str) -> int:
+    board = chess.Board(fen_str)
+    return 1 if board.has_castling_rights(board.turn) else 0
