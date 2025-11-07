@@ -41,6 +41,7 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
         'bitboards': board_array, 
         'eval': eval_numeric,
         'piece_count': featureEng.piece_mobility(row['FEN']),
+        'piece_mobility': featureEng.piece_mobility(row['FEN']),
     })
     # For testing
     # if index == 20:
@@ -53,4 +54,5 @@ np.savez_compressed(
     bitboards=np.array([d['bitboards'] for d in preprocessed_data]),
     eval=np.array([d['eval'] for d in preprocessed_data]),
     piece_count=np.array([d['piece_count'] for d in preprocessed_data]),
+    piece_mobility=np.array([d['piece_mobility'] for d in preprocessed_data]),
 )
