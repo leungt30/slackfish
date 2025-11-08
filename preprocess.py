@@ -39,7 +39,7 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
     preprocessed_data.append({
         'bitboards': board_array, 
         'eval': eval_numeric,
-        'piece_count': featureEng.piece_mobility(row['FEN']),
+        'piece_count': featureEng.piece_count(row['FEN']),
         'piece_mobility': featureEng.piece_mobility(row['FEN']),
         'player_turn': featureEng.player_turn(row['FEN']),
         'en_passant_available': featureEng.en_passant_available(row['FEN']),
@@ -47,8 +47,8 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
         'castling_rights': featureEng.castling_rights(row['FEN']),
     })
     # For testing
-    # if index == 20:
-    #     break
+    if index == 20:
+        break
 
 
 # Save to disk
