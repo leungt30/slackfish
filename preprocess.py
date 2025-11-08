@@ -4,9 +4,9 @@ from tqdm import tqdm
 import featureEng
 
 files = [
-    "/Users/ankushsarkar/Code/uni/Year4/4al3/project/data/chessData.csv",
-    "/Users/ankushsarkar/Code/uni/Year4/4al3/project/data/random_evals.csv",
-    "/Users/ankushsarkar/Code/uni/Year4/4al3/project/data/tactic_evals.csv",
+    "csvs/chessData.csv",
+    "csvs/random_evals.csv",
+    "csvs/tactic_evals.csv",
 ]
 
 dfs = []
@@ -45,10 +45,12 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
         'en_passant_available': featureEng.en_passant_available(row['FEN']),
         'in_check': featureEng.in_check(row['FEN']),
         'castling_rights': featureEng.castling_rights(row['FEN']),
+        'pst_score': featureEng.pst_score(row['FEN']),
     })
-    # For testing
-    # if index == 20:
-    #     break
+
+    # Uncomment for testing with a subset of data
+    if index == 20:
+        break
 
 
 # Save to disk
@@ -62,4 +64,5 @@ np.savez_compressed(
     en_passant_available=np.array([d['en_passant_available'] for d in preprocessed_data]),
     in_check=np.array([d['in_check'] for d in preprocessed_data]),
     castling_rights=np.array([d['castling_rights'] for d in preprocessed_data]),
+    pst_score=np.array([d['pst_score'] for d in preprocessed_data]),
 )
