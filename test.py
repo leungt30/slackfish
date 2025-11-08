@@ -1,0 +1,19 @@
+import numpy as np
+
+data = np.load('preprocessed_chess_data.npz')
+
+print(data['bitboards'][:5])
+print("--------------------------------")
+print(data['eval'][:5])
+print("--------------------------------")
+print(data['piece_count'][:5])
+print("--------------------------------")
+print(data['piece_mobility'][:5])
+print("--------------------------------")
+print(data['player_turn'][:5])
+print("--------------------------------")
+print(data['en_passant_available'][:5])
+print("--------------------------------")
+print(data['in_check'][:5])
+print("--------------------------------")
+print(data['castling_rights'][:5])
