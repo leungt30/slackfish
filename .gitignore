@@ -1,2 +1,3 @@
+venv
 data
 preprocessed_chess_data.npz
