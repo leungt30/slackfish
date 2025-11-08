@@ -81,4 +81,8 @@ def in_check(fen_str: str) -> int:
 
 def castling_rights(fen_str: str) -> int:
     board = chess.Board(fen_str)
-    return 1 if board.has_castling_rights(board.turn) else 0
+    white_king_side = 1 if board.has_kingside_castling_rights(chess.WHITE) else 0
+    white_queen_side = 1 if board.has_queenside_castling_rights(chess.WHITE) else 0
+    black_king_side = 1 if board.has_kingside_castling_rights(chess.BLACK) else 0
+    black_queen_side = 1 if board.has_queenside_castling_rights(chess.BLACK) else 0
+    return (white_king_side, white_queen_side, black_king_side, black_queen_side)
