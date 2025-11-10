@@ -11,8 +11,9 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import re
 
 class SlackFishCNN(nn.Module):
-    def __init__(self):
+    def __init__(self, input_feat):
         super(SlackFishCNN, self).__init__()
+        
         self.cnn = nn.Sequential(
             nn.Conv2d(12, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64),
@@ -37,15 +38,16 @@ class SlackFishCNN(nn.Module):
             nn.ReLU()
         )
 
-        self.fc1 = nn.Linear(128 * 2 * 2, 256)
+        self.fc1 = nn.Linear(128 * 2 * 2 + input_feat , 256) # 128 * 2 * 2 for kernels, + 12 for engineered features
         self.relu1 = nn.ReLU()
         self.dropout = nn.Dropout(p=0.3)
         self.fc2 = nn.Linear(256, 1)
 
     def forward(self, board, features):
         x = self.cnn(board)
-        x = x.view(x.size(0), -1)  # flatten
 
+        x = x.view(x.size(0), -1)
+    
         x = torch.cat([x,features], dim=1)
         
         x = self.fc1(x)
@@ -53,6 +55,6 @@ class SlackFishCNN(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)
         return x
-model = SlackFishCNN()
-num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Trainable parameters: {num_params:,}")
+model_CNN = SlackFishCNN(12)
+num_params_CNN = sum(p.numel() for p in model_CNN.parameters() if p.requires_grad)
+print(f"Trainable parameters: {num_params_CNN:,}")
