@@ -55,6 +55,7 @@ class SlackFishCNN(nn.Module):
         x = self.dropout(x)
         x = self.fc2(x)
         return x
-model_CNN = SlackFishCNN(12)
-num_params_CNN = sum(p.numel() for p in model_CNN.parameters() if p.requires_grad)
-print(f"Trainable parameters: {num_params_CNN:,}")
+    
+# model_CNN = SlackFishCNN(12)
+# num_params_CNN = sum(p.numel() for p in model_CNN.parameters() if p.requires_grad)
+# print(f"Trainable parameters: {num_params_CNN:,}")

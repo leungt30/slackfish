@@ -35,6 +35,6 @@ class SlackFishNN(nn.Module):
         x = self.nn(x)
         return x
         
-model_NN = SlackFishNN()
-num_params_NN = sum(p.numel() for p in model_NN.parameters() if p.requires_grad)
-print(f"Trainable parameters: {num_params_NN:,}")
+# model_NN = SlackFishNN()
+# num_params_NN = sum(p.numel() for p in model_NN.parameters() if p.requires_grad)
+# print(f"Trainable parameters: {num_params_NN:,}")
