@@ -11,7 +11,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 sys.path.append("Models/Training")
 
-import slackFishCNN
+from SlackFishCNN import SlackFishCNN_V1
 import featureEng
 
 
@@ -76,7 +76,7 @@ def get_score(board: chess.Board, move: chess.Move):
 
 # Create objects
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = slackFishCNN.SlackFishCNN(11).to(device)
+model = SlackFishCNN_V1(11).to(device)
 optimizer = torch.optim.Adam(
     model.parameters(),
     lr=0.001,
@@ -89,7 +89,7 @@ Scaler_X = joblib.load("Models/Scalers/scaler_X.pkl")
 Scaler_Y = joblib.load("Models/Scalers/scaler_Y.pkl")
 
 # Load model weights
-model_path = "Models/Weights/SlackFishCNN_499"
+model_path = "Models/Weights/SlackFishCNN_V1_499"
 checkpoint = torch.load(model_path, map_location="cuda")
 
 # Load model state

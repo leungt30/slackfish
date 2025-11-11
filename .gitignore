@@ -10,3 +10,4 @@ __pycache__/*
 *.log
 full_16m_preprocessed_chess_data.npz
 *.pyc
+*.pgn
