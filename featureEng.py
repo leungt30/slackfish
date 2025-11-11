@@ -149,6 +149,10 @@ def pst_score(fenstr: str) -> int:
             # reverse order if black
             # adds piece value and position value from table combined if white
             # subtracts piece value if black
+
+            # WIP
+            # cannot rotate table if black
+            # need to flip vertically, not rotate since board isnt symmetric
             score += (pst[char.upper()][position if char.isupper() else -position] + values.get(char.upper())) * (1 if char.isupper() else -1)
             position += 1
         if char.isdigit():

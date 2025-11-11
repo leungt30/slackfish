@@ -1,0 +1,173 @@
+import chess
+import joblib
+import numpy as np
+import pandas as pd
+import random
+import pickle
+
+import os, sys
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+sys.path.append("Models/Training")
+# sys.path.append("slackfish")
+
+
+
+import torch
+import slackFishCNN
+import featureEng
+
+
+piece_order = ['p', 'n', 'b', 'r', 'q', 'k', 'P', 'N', 'B', 'R', 'Q', 'K']
+
+def fen_to_bitboards(fenstr:str):
+    board = chess.Board(fenstr)
+    # Mapping piece symbols to chess piece type constants
+    piece_type_map = {
+        'p': chess.PAWN,
+        'n': chess.KNIGHT,
+        'b': chess.BISHOP,
+        'r': chess.ROOK,
+        'q': chess.QUEEN,
+        'k': chess.KING
+    }
+    
+    bitboards = {}
+
+    for piece_symbol in piece_order:
+        piece_type = piece_type_map[piece_symbol.lower()]
+        color = chess.WHITE if piece_symbol.isupper() else chess.BLACK
+        bitboard = board.pieces(piece_type, color)
+        bitboards[piece_symbol] = np.array([
+            1 if bitboard & chess.BB_SQUARES[i] else 0 for i in range(64)
+        ], dtype=np.uint8)
+
+    return bitboards
+
+def normalize(data_x):
+    x_scaled = Scaler_X.fit_transform(data_x)
+    
+    return x_scaled
+
+def predict(fenStr: str):
+    bitboards = fen_to_bitboards(fenStr)
+    board_array = np.stack([bitboards[piece] for piece in piece_order], axis=0)
+    features = np.array([
+        featureEng.piece_count(fenStr),
+        *featureEng.piece_mobility(fenStr),
+        featureEng.player_turn(fenStr),
+        featureEng.en_passant_available(fenStr),
+        featureEng.in_check(fenStr),
+        *featureEng.castling_rights(fenStr),
+        featureEng.pst_score(fenStr),
+    ]).reshape(1, -1)
+    features = normalize(features)
+
+    bitboards_t = torch.tensor(board_array, dtype=torch.float32).reshape(-1, 12, 8, 8)
+    features_t = torch.tensor(features, dtype=torch.float32)
+
+    score_t = model(bitboards_t.to(device), features_t.to(device))
+    score = Scaler_Y.inverse_transform(score_t.cpu().detach().numpy())
+    # Dummy model prediction
+    return score
+
+# Placeholder scoring functions
+# would take in a board in fen format
+# and return a score from the model
+def get_score(board: chess.Board, move: chess.Move):
+    moved_board = board.copy()
+    moved_board.push(move)
+    fenStr = moved_board.fen()
+    return predict(fenStr)
+
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model = slackFishCNN.SlackFishCNN(11).to(device)
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=0.001,
+    eps=1e-8,
+    weight_decay=1e-4,
+)
+
+Scaler_X = joblib.load("Models/Scalers/scaler_X.pkl")
+Scaler_Y = joblib.load("Models/Scalers/scaler_Y.pkl")
+
+model_path = "Models/Weights/SlackFishCNN_499"
+checkpoint = torch.load(model_path, map_location="cuda")
+
+    
+model.load_state_dict(checkpoint["model_state_dict"])
+optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+model.eval()
+print("Model loaded.")
+print("========================")
+
+startingFen = input("Enter starting FEN (or press Enter for standard start): ")
+board = chess.Board(startingFen) if startingFen else chess.Board()
+print(board)
+print("------------------------")
+print()
+
+
+print("Select white or black pieces to play as:")
+color = None
+while color == None:
+    color = input("Enter 'w' for white or 'b' for black: ").strip().lower()
+    if color not in ['w', 'b']:
+        print("Invalid input, try again.")
+        color = None
+
+if color == 'w':
+    player_color = chess.WHITE
+else:
+    player_color = chess.BLACK
+
+while not board.is_game_over():
+    if board.turn == player_color:
+        # player's turn
+        user_move = input("Enter your move in UCI format (e.g., e2e4): ")
+
+        
+        if " " in user_move or len(user_move) != 4 and len(user_move) != 5:
+            print("Invalid move format. Try again.")
+            print()
+        else:
+            move = chess.Move.from_uci(user_move)
+            if move in board.legal_moves:
+                board.push(move)
+                print("========================")
+                print("you played:", move)
+                print("------------------------")
+                print(board)
+                print("========================")
+                print()
+            else:
+                print("Illegal move. Try again.")
+                print()
+    else:
+        # computer turn
+        # uses random move for now
+        board.generate_legal_moves()
+        best_move = None
+        best_score = -float('inf')
+        print("Computer is thinking...")
+        for move in board.legal_moves:
+            score = get_score(board, move) * (-1 if color == "w" else 1)
+            print(f"Move: {move}, Score: {score}")
+            if score > best_score:
+                best_score = score
+                best_move = move
+        
+        board.push(best_move)
+        print("========================")
+        print("computer played:", best_move)
+        print("------------------------")
+        print(board)
+        print("========================")
+        print()
+            
+        
+        
