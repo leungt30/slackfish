@@ -6,8 +6,6 @@ from torch.utils.data import DataLoader
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 import re
 
 class SlackFishCNN(nn.Module):

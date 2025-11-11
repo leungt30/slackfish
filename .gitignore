@@ -4,6 +4,9 @@ preprocessed_chess_data.npz
 csvs/*
 tempCodeRunnerFile.py
 */tempCodeRunnerFile.py
+*/tempCodeRunnerFile.python
 .vscode/*
 __pycache__/*
 *.log
+full_16m_preprocessed_chess_data.npz
+*.pyc
