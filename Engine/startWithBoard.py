@@ -15,7 +15,7 @@ sys.path.append("Models/Training")
 
 
 import torch
-import slackFishCNN
+from SlackFishCNN import SlackFishCNN_V1
 import featureEng
 
 
@@ -83,7 +83,7 @@ def get_score(board: chess.Board, move: chess.Move):
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = slackFishCNN.SlackFishCNN(11).to(device)
+model = SlackFishCNN_V1(11).to(device)
 optimizer = torch.optim.Adam(
     model.parameters(),
     lr=0.001,
@@ -94,7 +94,7 @@ optimizer = torch.optim.Adam(
 Scaler_X = joblib.load("Models/Scalers/scaler_X.pkl")
 Scaler_Y = joblib.load("Models/Scalers/scaler_Y.pkl")
 
-model_path = "Models/Weights/SlackFishCNN_499"
+model_path = "Models/Weights/SlackFishCNN_V1_499"
 checkpoint = torch.load(model_path, map_location="cuda")
 
     
@@ -108,6 +108,7 @@ print("========================")
 startingFen = input("Enter starting FEN (or press Enter for standard start): ")
 board = chess.Board(startingFen) if startingFen else chess.Board()
 print(board)
+print("PST Score for starting position:", featureEng.pst_score(board.fen()))
 print("------------------------")
 print()
 
