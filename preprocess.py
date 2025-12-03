@@ -49,7 +49,7 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
             "pst_score": featureEng.pst_score(row["FEN"]),
             "check_one_move_away": featureEng.check_one_move_away(row["FEN"]),
             "legal_moves_per_side": featureEng.legal_moves_per_side(row["FEN"]),
-            "issolated_pawns": featureEng.issolated_pawns(row["FEN"]),
+            "isolated_pawns": featureEng.isolated_pawns(row["FEN"]),
             "double_pawns": featureEng.double_pawns(row["FEN"]),
             "rook_on_7th_rank": featureEng.rook_on_7th_rank(row["FEN"]),
             "rook_on_semi_open_file": featureEng.rook_on_semi_open_file(row["FEN"]),
@@ -87,7 +87,7 @@ np.savez_compressed(
     legal_moves_per_side=np.array(
         [d["legal_moves_per_side"] for d in preprocessed_data]
     ),
-    issolated_pawns=np.array([d["issolated_pawns"] for d in preprocessed_data]),
+    isolated_pawns=np.array([d["isolated_pawns"] for d in preprocessed_data]),
     double_pawns=np.array([d["double_pawns"] for d in preprocessed_data]),
     rook_on_7th_rank=np.array([d["rook_on_7th_rank"] for d in preprocessed_data]),
     rook_on_semi_open_file=np.array(

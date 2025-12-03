@@ -43,8 +43,8 @@ def piece_count(fen_str: str) -> int:
         "Q": 9,
     }
     total_score = 0
-    for peice in score_map.keys():
-        total_score += fen_str.count(peice) * score_map[peice]
+    for piece in score_map.keys():
+        total_score += fen_str.count(piece) * score_map[piece]
     return total_score
 
 
@@ -549,7 +549,7 @@ def legal_moves_per_side(fen_str: str) -> int:
     return (black_moves, white_moves)
 
 
-def issolated_pawns(fen_str: str) -> tuple:
+def isolated_pawns(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_isolated_pawns = np.zeros(64, dtype=np.uint8)
     black_isolated_pawns = np.zeros(64, dtype=np.uint8)
@@ -569,7 +569,7 @@ def is_isolated(board: chess.Board, color: chess.Color, square: int) -> int:
         # check the right and left collum
         for i in range(0, 63):
             if i % 8 == (square + 1) % 8 or i % 8 == (square - 1) % 8:
-                # check if peice here is a pawn
+                # check if piece here is a pawn
                 if (
                     board.piece_at(i) is not None
                     and board.piece_at(i).piece_type == chess.PAWN
@@ -580,7 +580,7 @@ def is_isolated(board: chess.Board, color: chess.Color, square: int) -> int:
         if square % 8 == 0:
             for i in range(0, 63):
                 if i % 8 == (square + 1) % 8:
-                    # check if peice here is a pawn
+                    # check if piece here is a pawn
                     if (
                         board.piece_at(i) is not None
                         and board.piece_at(i).piece_type == chess.PAWN
@@ -590,7 +590,7 @@ def is_isolated(board: chess.Board, color: chess.Color, square: int) -> int:
         elif square % 8 == 7:
             for i in range(0, 63):
                 if i % 8 == (square - 1) % 8:
-                    # check if peice here is a pawn
+                    # check if piece here is a pawn
                     if (
                         board.piece_at(i) is not None
                         and board.piece_at(i).piece_type == chess.PAWN
@@ -790,10 +790,10 @@ def pinned_pieces(fen_str: str) -> tuple:
     return (white_pinned_pieces, black_pinned_pieces)
 
 
-def number_of_hanging_pieces(fen_str: str) -> tuple:
+def value_of_hanging_pieces(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
-    white_hanging_pieces = 0
-    black_hanging_pieces = 0
+    white_value_of_hanging_pieces = 0
+    black_value_of_hanging_pieces = 0
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece is not None:
@@ -801,13 +801,30 @@ def number_of_hanging_pieces(fen_str: str) -> tuple:
                 if board.is_attacked_by(
                     chess.BLACK, square
                 ) and not board.is_attacked_by(chess.WHITE, square):
-                    white_hanging_pieces += 1
+                    print(piece_value(piece))
+                    white_value_of_hanging_pieces += piece_value(piece)
             else:
                 if board.is_attacked_by(
                     chess.WHITE, square
                 ) and not board.is_attacked_by(chess.BLACK, square):
-                    black_hanging_pieces += 1
-    return (white_hanging_pieces, black_hanging_pieces)
+                    black_value_of_hanging_pieces += piece_value(piece)
+    return (white_value_of_hanging_pieces, black_value_of_hanging_pieces)
+
+
+def piece_value(piece: chess.Piece) -> int:
+    if piece.piece_type == chess.PAWN:
+        return 1
+    elif piece.piece_type == chess.KNIGHT:
+        return 3
+    elif piece.piece_type == chess.BISHOP:
+        return 3
+    elif piece.piece_type == chess.ROOK:
+        return 5
+    elif piece.piece_type == chess.QUEEN:
+        return 9
+    elif piece.piece_type == chess.KING:
+        return 20000
+    return 0
 
 
 def hanging_pieces_bitboards(fen_str: str) -> tuple:
@@ -840,3 +857,7 @@ def center_control(fen_str: str) -> tuple:
             white_center_control += len(list(board.attackers(chess.WHITE, square)))
             black_center_control += len(list(board.attackers(chess.BLACK, square)))
     return (white_center_control, black_center_control)
+
+
+fen = "2kr1b1r/pp1ppppp/nqp2n2/7b/3PQ3/3N4/PPPBPPPP/2KR1BNR w Kk - 0 1"
+print(value_of_hanging_pieces(fen))
