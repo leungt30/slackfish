@@ -513,12 +513,24 @@ def pst_score(fenstr: str) -> int:
     return score
 
 
-def check_one_move_away(fen_str: str) -> int:
+def check_one_move_away(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
+    white_check_one_move_away = 0
+    black_check_one_move_away = 0
     for move in board.legal_moves:
         if board.gives_check(move):
-            return 1
-    return 0
+            if board.turn == chess.WHITE:
+                white_check_one_move_away += 1
+            else:
+                black_check_one_move_away += 1
+    board.turn = not board.turn
+    for move in board.legal_moves:
+        if board.gives_check(move):
+            if board.turn == chess.WHITE:
+                white_check_one_move_away += 1
+            else:
+                black_check_one_move_away += 1
+    return (white_check_one_move_away, black_check_one_move_away)
 
 
 def legal_moves_per_side(fen_str: str) -> int:
@@ -818,7 +830,7 @@ def hanging_pieces_bitboards(fen_str: str) -> tuple:
     return (white_hanging_pieces, black_hanging_pieces)
 
 
-def center_controll(fen_str: str) -> tuple:
+def center_control(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_center_control = 0
     black_center_control = 0
