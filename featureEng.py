@@ -804,7 +804,6 @@ def value_of_hanging_pieces(fen_str: str) -> tuple:
                 if board.is_attacked_by(
                     chess.BLACK, square
                 ) and not board.is_attacked_by(chess.WHITE, square):
-                    print(piece_value(piece))
                     white_value_of_hanging_pieces += piece_value(piece)
             else:
                 if board.is_attacked_by(
@@ -860,7 +859,3 @@ def center_control(fen_str: str) -> tuple:
             white_center_control += len(list(board.attackers(chess.WHITE, square)))
             black_center_control += len(list(board.attackers(chess.BLACK, square)))
     return (white_center_control, black_center_control)
-
-
-fen = "2kr1b1r/pp1ppppp/nqp2n2/7b/3PQ3/3N4/PPPBPPPP/2KR1BNR w Kk - 0 1"
-print(value_of_hanging_pieces(fen))
