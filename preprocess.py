@@ -6,7 +6,7 @@ import featureEng
 files = [
     "data/chessData.csv",
     "data/random_evals.csv",
-    "data/tactic_evals.csv",
+    # "data/tactic_evals.csv",
 ]
 
 dfs = []
@@ -58,15 +58,15 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
             "fork_available": featureEng.fork_available(row["FEN"]),
             "bishop_activity": featureEng.bishop_activity(row["FEN"]),
             "pinned_pieces": featureEng.pinned_pieces(row["FEN"]),
-            "number_of_hanging_pieces": featureEng.number_of_hanging_pieces(row["FEN"]),
+            "value_of_hanging_pieces": featureEng.value_of_hanging_pieces(row["FEN"]),
             "hanging_pieces_bitboards": featureEng.hanging_pieces_bitboards(row["FEN"]),
             "center_control": featureEng.center_control(row["FEN"]),
         }
     )
 
     # Uncomment for testing with a subset of data
-    if index == 20:
-        break
+    # if index == 20:
+    #     break
 
 
 # Save to disk
@@ -98,8 +98,8 @@ np.savez_compressed(
     fork_available=np.array([d["fork_available"] for d in preprocessed_data]),
     bishop_activity=np.array([d["bishop_activity"] for d in preprocessed_data]),
     pinned_pieces=np.array([d["pinned_pieces"] for d in preprocessed_data]),
-    number_of_hanging_pieces=np.array(
-        [d["number_of_hanging_pieces"] for d in preprocessed_data]
+    value_of_hanging_pieces=np.array(
+        [d["value_of_hanging_pieces"] for d in preprocessed_data]
     ),
     hanging_pieces_bitboards=np.array(
         [d["hanging_pieces_bitboards"] for d in preprocessed_data]
