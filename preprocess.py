@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import featureEng
+import os
+import signal
 
 files = [
     "data/chessData.csv",
@@ -24,7 +26,15 @@ if "move" in data.columns:
     data = data.drop(columns=["move"])
 
 output_file = "preprocessed_chess_data.npz"
+# Save checkpoint every N rows (adjust based on your needs)
+SAVE_INTERVAL = 1000  # Save every 1000 rows
 
+# Delete existing file to start fresh
+if os.path.exists(output_file):
+    os.remove(output_file)
+    print(f"Deleted existing {output_file}")
+
+# Initialize empty lists
 all_bitboards = []
 all_eval = []
 all_piece_count = []
@@ -50,6 +60,7 @@ all_hanging_pieces_bitboards = []
 all_center_control = []
 
 piece_order = ["p", "n", "b", "r", "q", "k", "P", "N", "B", "R", "Q", "K"]
+
 
 def save_data():
     """Save all accumulated data to disk"""
@@ -80,10 +91,18 @@ def save_data():
         center_control=np.array(all_center_control),
     )
 
+def signal_handler(signum, frame):
+    """Handle signals (SIGTERM, SIGINT) by saving data before exit"""
+    print(f"\n\nReceived signal {signum}. Saving progress before exit...")
+    save_data()
+    print(f"Progress saved! Processed {len(all_eval)} rows before exit.")
+    exit(0)
 
-for index, row in tqdm(
-    data.iterrows(), total=len(data), desc="Processing positions"
-):
+# Register signal handlers
+signal.signal(signal.SIGTERM, signal_handler)  # For kill command
+signal.signal(signal.SIGINT, signal_handler)   # For Ctrl+C
+
+for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positions"):
     try:
         bitboards = featureEng.fen_to_bitboards(row["FEN"])
         board_array = np.stack([bitboards[piece] for piece in piece_order], axis=0)
@@ -123,14 +142,22 @@ for index, row in tqdm(
         )
         all_center_control.append(featureEng.center_control(row["FEN"]))
 
-        save_data()
+        # Save in batches to avoid frequent I/O
+        if (index + 1) % SAVE_INTERVAL == 0:
+            save_data()
+            print(f"\nCheckpoint saved at row {index + 1}")
 
     except Exception as e:
         print(f"\nError processing row {index}: {e}")
+        # Save progress before continuing in case of crash
+        save_data()
+        print(f"Progress saved. Skipping row {index} and continuing...")
         continue
 
     # Uncomment for testing with a subset of data
     # if index == 20:
     #     break
 
+# Final save to ensure everything is saved
+save_data()
 print(f"\nProcessing complete! Saved {len(all_eval)} rows to {output_file}")
