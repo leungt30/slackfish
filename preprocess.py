@@ -23,86 +23,114 @@ print(f"Total number of rows: {len(data)}")
 if "move" in data.columns:
     data = data.drop(columns=["move"])
 
-preprocessed_data = []
+output_file = "preprocessed_chess_data.npz"
+
+all_bitboards = []
+all_eval = []
+all_piece_count = []
+all_piece_mobility = []
+all_player_turn = []
+all_en_passant_available = []
+all_in_check = []
+all_castling_rights = []
+all_pst_score = []
+all_check_one_move_away = []
+all_legal_moves_per_side = []
+all_isolated_pawns = []
+all_double_pawns = []
+all_rook_on_7th_rank = []
+all_rook_on_semi_open_file = []
+all_rooks_on_same_file = []
+all_is_forking = []
+all_fork_available = []
+all_bishop_activity = []
+all_pinned_pieces = []
+all_value_of_hanging_pieces = []
+all_hanging_pieces_bitboards = []
+all_center_control = []
+
 piece_order = ["p", "n", "b", "r", "q", "k", "P", "N", "B", "R", "Q", "K"]
 
-for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positions"):
-    bitboards = featureEng.fen_to_bitboards(row["FEN"])
-    board_array = np.stack([bitboards[piece] for piece in piece_order], axis=0)
-    eval_str = row["Evaluation"]
-    if isinstance(eval_str, str) and "#" in eval_str:
-        # convert mate score to centipawn score
-        mate_in = int(eval_str.split("#")[1])
-        eval_numeric = (32000 - abs(mate_in)) * (1 if mate_in > 0 else -1)
-    else:
-        eval_numeric = float(eval_str)
-    preprocessed_data.append(
-        {
-            "bitboards": board_array,
-            "eval": eval_numeric,
-            "piece_count": featureEng.piece_count(row["FEN"]),
-            "piece_mobility": featureEng.piece_mobility(row["FEN"]),
-            "player_turn": featureEng.player_turn(row["FEN"]),
-            "en_passant_available": featureEng.en_passant_available(row["FEN"]),
-            "in_check": featureEng.in_check(row["FEN"]),
-            "castling_rights": featureEng.castling_rights(row["FEN"]),
-            "pst_score": featureEng.pst_score(row["FEN"]),
-            "check_one_move_away": featureEng.check_one_move_away(row["FEN"]),
-            "legal_moves_per_side": featureEng.legal_moves_per_side(row["FEN"]),
-            "isolated_pawns": featureEng.isolated_pawns(row["FEN"]),
-            "double_pawns": featureEng.double_pawns(row["FEN"]),
-            "rook_on_7th_rank": featureEng.rook_on_7th_rank(row["FEN"]),
-            "rook_on_semi_open_file": featureEng.rook_on_semi_open_file(row["FEN"]),
-            "rooks_on_same_file": featureEng.rooks_on_same_file(row["FEN"]),
-            "is_forking": featureEng.is_forking(row["FEN"]),
-            "fork_available": featureEng.fork_available(row["FEN"]),
-            "bishop_activity": featureEng.bishop_activity(row["FEN"]),
-            "pinned_pieces": featureEng.pinned_pieces(row["FEN"]),
-            "value_of_hanging_pieces": featureEng.value_of_hanging_pieces(row["FEN"]),
-            "hanging_pieces_bitboards": featureEng.hanging_pieces_bitboards(row["FEN"]),
-            "center_control": featureEng.center_control(row["FEN"]),
-        }
+def save_data():
+    """Save all accumulated data to disk"""
+    np.savez_compressed(
+        output_file,
+        bitboards=np.array(all_bitboards),
+        eval=np.array(all_eval),
+        piece_count=np.array(all_piece_count),
+        piece_mobility=np.array(all_piece_mobility),
+        player_turn=np.array(all_player_turn),
+        en_passant_available=np.array(all_en_passant_available),
+        in_check=np.array(all_in_check),
+        castling_rights=np.array(all_castling_rights),
+        pst_score=np.array(all_pst_score),
+        check_one_move_away=np.array(all_check_one_move_away),
+        legal_moves_per_side=np.array(all_legal_moves_per_side),
+        isolated_pawns=np.array(all_isolated_pawns),
+        double_pawns=np.array(all_double_pawns),
+        rook_on_7th_rank=np.array(all_rook_on_7th_rank),
+        rook_on_semi_open_file=np.array(all_rook_on_semi_open_file),
+        rooks_on_same_file=np.array(all_rooks_on_same_file),
+        is_forking=np.array(all_is_forking),
+        fork_available=np.array(all_fork_available),
+        bishop_activity=np.array(all_bishop_activity),
+        pinned_pieces=np.array(all_pinned_pieces),
+        value_of_hanging_pieces=np.array(all_value_of_hanging_pieces),
+        hanging_pieces_bitboards=np.array(all_hanging_pieces_bitboards),
+        center_control=np.array(all_center_control),
     )
+
+
+for index, row in tqdm(
+    data.iterrows(), total=len(data), desc="Processing positions"
+):
+    try:
+        bitboards = featureEng.fen_to_bitboards(row["FEN"])
+        board_array = np.stack([bitboards[piece] for piece in piece_order], axis=0)
+        eval_str = row["Evaluation"]
+        if isinstance(eval_str, str) and "#" in eval_str:
+            # convert mate score to centipawn score
+            mate_in = int(eval_str.split("#")[1])
+            eval_numeric = (32000 - abs(mate_in)) * (1 if mate_in > 0 else -1)
+        else:
+            eval_numeric = float(eval_str)
+
+        all_bitboards.append(board_array)
+        all_eval.append(eval_numeric)
+        all_piece_count.append(featureEng.piece_count(row["FEN"]))
+        all_piece_mobility.append(featureEng.piece_mobility(row["FEN"]))
+        all_player_turn.append(featureEng.player_turn(row["FEN"]))
+        all_en_passant_available.append(featureEng.en_passant_available(row["FEN"]))
+        all_in_check.append(featureEng.in_check(row["FEN"]))
+        all_castling_rights.append(featureEng.castling_rights(row["FEN"]))
+        all_pst_score.append(featureEng.pst_score(row["FEN"]))
+        all_check_one_move_away.append(featureEng.check_one_move_away(row["FEN"]))
+        all_legal_moves_per_side.append(featureEng.legal_moves_per_side(row["FEN"]))
+        all_isolated_pawns.append(featureEng.isolated_pawns(row["FEN"]))
+        all_double_pawns.append(featureEng.double_pawns(row["FEN"]))
+        all_rook_on_7th_rank.append(featureEng.rook_on_7th_rank(row["FEN"]))
+        all_rook_on_semi_open_file.append(featureEng.rook_on_semi_open_file(row["FEN"]))
+        all_rooks_on_same_file.append(featureEng.rooks_on_same_file(row["FEN"]))
+        all_is_forking.append(featureEng.is_forking(row["FEN"]))
+        all_fork_available.append(featureEng.fork_available(row["FEN"]))
+        all_bishop_activity.append(featureEng.bishop_activity(row["FEN"]))
+        all_pinned_pieces.append(featureEng.pinned_pieces(row["FEN"]))
+        all_value_of_hanging_pieces.append(
+            featureEng.value_of_hanging_pieces(row["FEN"])
+        )
+        all_hanging_pieces_bitboards.append(
+            featureEng.hanging_pieces_bitboards(row["FEN"])
+        )
+        all_center_control.append(featureEng.center_control(row["FEN"]))
+
+        save_data()
+
+    except Exception as e:
+        print(f"\nError processing row {index}: {e}")
+        continue
 
     # Uncomment for testing with a subset of data
     # if index == 20:
     #     break
 
-
-# Save to disk
-np.savez_compressed(
-    "preprocessed_chess_data.npz",
-    bitboards=np.array([d["bitboards"] for d in preprocessed_data]),
-    eval=np.array([d["eval"] for d in preprocessed_data]),
-    piece_count=np.array([d["piece_count"] for d in preprocessed_data]),
-    piece_mobility=np.array([d["piece_mobility"] for d in preprocessed_data]),
-    player_turn=np.array([d["player_turn"] for d in preprocessed_data]),
-    en_passant_available=np.array(
-        [d["en_passant_available"] for d in preprocessed_data]
-    ),
-    in_check=np.array([d["in_check"] for d in preprocessed_data]),
-    castling_rights=np.array([d["castling_rights"] for d in preprocessed_data]),
-    pst_score=np.array([d["pst_score"] for d in preprocessed_data]),
-    check_one_move_away=np.array([d["check_one_move_away"] for d in preprocessed_data]),
-    legal_moves_per_side=np.array(
-        [d["legal_moves_per_side"] for d in preprocessed_data]
-    ),
-    isolated_pawns=np.array([d["isolated_pawns"] for d in preprocessed_data]),
-    double_pawns=np.array([d["double_pawns"] for d in preprocessed_data]),
-    rook_on_7th_rank=np.array([d["rook_on_7th_rank"] for d in preprocessed_data]),
-    rook_on_semi_open_file=np.array(
-        [d["rook_on_semi_open_file"] for d in preprocessed_data]
-    ),
-    rooks_on_same_file=np.array([d["rooks_on_same_file"] for d in preprocessed_data]),
-    is_forking=np.array([d["is_forking"] for d in preprocessed_data]),
-    fork_available=np.array([d["fork_available"] for d in preprocessed_data]),
-    bishop_activity=np.array([d["bishop_activity"] for d in preprocessed_data]),
-    pinned_pieces=np.array([d["pinned_pieces"] for d in preprocessed_data]),
-    value_of_hanging_pieces=np.array(
-        [d["value_of_hanging_pieces"] for d in preprocessed_data]
-    ),
-    hanging_pieces_bitboards=np.array(
-        [d["hanging_pieces_bitboards"] for d in preprocessed_data]
-    ),
-    center_control=np.array([d["center_control"] for d in preprocessed_data]),
-)
+print(f"\nProcessing complete! Saved {len(all_eval)} rows to {output_file}")
