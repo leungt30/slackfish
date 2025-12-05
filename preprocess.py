@@ -27,7 +27,7 @@ if "move" in data.columns:
 
 output_file = "preprocessed_chess_data.npz"
 # Save checkpoint every N rows (adjust based on your needs)
-SAVE_INTERVAL = 1000  # Save every 1000 rows
+SAVE_INTERVAL = 10000
 
 # Delete existing file to start fresh
 if os.path.exists(output_file):
@@ -38,7 +38,6 @@ if os.path.exists(output_file):
 all_bitboards = []
 all_eval = []
 all_piece_count = []
-all_piece_mobility = []
 all_player_turn = []
 all_en_passant_available = []
 all_in_check = []
@@ -58,6 +57,7 @@ all_pinned_pieces = []
 all_value_of_hanging_pieces = []
 all_hanging_pieces_bitboards = []
 all_center_control = []
+all_is_win = []
 
 piece_order = ["p", "n", "b", "r", "q", "k", "P", "N", "B", "R", "Q", "K"]
 
@@ -69,7 +69,6 @@ def save_data():
         bitboards=np.array(all_bitboards),
         eval=np.array(all_eval),
         piece_count=np.array(all_piece_count),
-        piece_mobility=np.array(all_piece_mobility),
         player_turn=np.array(all_player_turn),
         en_passant_available=np.array(all_en_passant_available),
         in_check=np.array(all_in_check),
@@ -89,7 +88,9 @@ def save_data():
         value_of_hanging_pieces=np.array(all_value_of_hanging_pieces),
         hanging_pieces_bitboards=np.array(all_hanging_pieces_bitboards),
         center_control=np.array(all_center_control),
+        is_win=np.array(all_is_win),
     )
+
 
 def signal_handler(signum, frame):
     """Handle signals (SIGTERM, SIGINT) by saving data before exit"""
@@ -98,9 +99,10 @@ def signal_handler(signum, frame):
     print(f"Progress saved! Processed {len(all_eval)} rows before exit.")
     exit(0)
 
+
 # Register signal handlers
 signal.signal(signal.SIGTERM, signal_handler)  # For kill command
-signal.signal(signal.SIGINT, signal_handler)   # For Ctrl+C
+signal.signal(signal.SIGINT, signal_handler)  # For Ctrl+C
 
 for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positions"):
     try:
@@ -117,7 +119,6 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
         all_bitboards.append(board_array)
         all_eval.append(eval_numeric)
         all_piece_count.append(featureEng.piece_count(row["FEN"]))
-        all_piece_mobility.append(featureEng.piece_mobility(row["FEN"]))
         all_player_turn.append(featureEng.player_turn(row["FEN"]))
         all_en_passant_available.append(featureEng.en_passant_available(row["FEN"]))
         all_in_check.append(featureEng.in_check(row["FEN"]))
@@ -141,8 +142,8 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
             featureEng.hanging_pieces_bitboards(row["FEN"])
         )
         all_center_control.append(featureEng.center_control(row["FEN"]))
+        all_is_win.append(featureEng.is_win(row["FEN"]))
 
-        # Save in batches to avoid frequent I/O
         if (index + 1) % SAVE_INTERVAL == 0:
             save_data()
             print(f"\nCheckpoint saved at row {index + 1}")
@@ -155,9 +156,9 @@ for index, row in tqdm(data.iterrows(), total=len(data), desc="Processing positi
         continue
 
     # Uncomment for testing with a subset of data
-    # if index == 20:
-    #     break
+    if index == 5:
+        break
 
-# Final save to ensure everything is saved
+# Final save
 save_data()
 print(f"\nProcessing complete! Saved {len(all_eval)} rows to {output_file}")
