@@ -20,11 +20,12 @@ def fen_to_bitboards(fenstr: str):
     for piece_symbol in piece_order:
         piece_type = piece_type_map[piece_symbol.lower()]
         color = chess.WHITE if piece_symbol.isupper() else chess.BLACK
-        bitboard = board.pieces(piece_type, color)
-        bitboards[piece_symbol] = np.array(
-            [1 if bitboard & chess.BB_SQUARES[i] else 0 for i in range(64)],
-            dtype=np.uint8,
-        )
+        squares = board.pieces(piece_type, color)
+        # Iterate directly over squares instead of all 64
+        arr = np.zeros(64, dtype=np.uint8)
+        for square in squares:
+            arr[square] = 1
+        bitboards[piece_symbol] = arr
 
     return bitboards
 
@@ -46,24 +47,6 @@ def piece_count(fen_str: str) -> int:
     for piece in score_map.keys():
         total_score += fen_str.count(piece) * score_map[piece]
     return total_score
-
-
-def piece_mobility(fen_str: str) -> int:
-    board = chess.Board(fen_str)
-    white_mobility = 0
-    black_mobility = 0
-    for move in board.legal_moves:
-        if board.turn == chess.WHITE:
-            white_mobility += 1
-        else:
-            black_mobility += 1
-    board.turn = not board.turn
-    for move in board.legal_moves:
-        if board.turn == chess.WHITE:
-            white_mobility += 1
-        else:
-            black_mobility += 1
-    return (white_mobility, black_mobility)
 
 
 def player_turn(fen_str: str) -> int:
@@ -491,14 +474,70 @@ def pst_score(fenstr: str) -> int:
         ),
     }
     flip = (
-        56, 57, 58, 59, 60, 61, 62, 63,
-        48, 49, 50, 51, 52, 53, 54, 55,
-        40, 41, 42, 43, 44, 45, 46, 47,
-        32, 33, 34, 35, 36, 37, 38, 39,
-        24, 25, 26, 27, 28, 29, 30, 31,
-        16, 17, 18, 19, 20, 21, 22, 23,
-        8,  9, 10, 11, 12, 13, 14, 15,
-        0,  1,  2,  3,  4,  5,  6,  7
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
     )
     score = 0
     position = 0
@@ -508,7 +547,10 @@ def pst_score(fenstr: str) -> int:
             # reverse order if black
             # adds piece value and position value from table combined if white
             # subtracts piece value if black
-            score += (pst[char.upper()][position if char.isupper() else flip[position]] + values.get(char.upper())) * (1 if char.isupper() else -1)
+            score += (
+                pst[char.upper()][position if char.isupper() else flip[position]]
+                + values.get(char.upper())
+            ) * (1 if char.isupper() else -1)
             position += 1
         if char.isdigit():
             position += int(char)
@@ -520,35 +562,49 @@ def check_one_move_away(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_check_one_move_away = 0
     black_check_one_move_away = 0
-    for move in board.legal_moves:
-        if board.gives_check(move):
-            if board.turn == chess.WHITE:
-                white_check_one_move_away += 1
-            else:
-                black_check_one_move_away += 1
+
+    # Count checks for current turn
+    if board.turn == chess.WHITE:
+        white_check_one_move_away = sum(
+            1 for move in board.legal_moves if board.gives_check(move)
+        )
+    else:
+        black_check_one_move_away = sum(
+            1 for move in board.legal_moves if board.gives_check(move)
+        )
+
+    # Flip turn and count checks for the other side
     board.turn = not board.turn
-    for move in board.legal_moves:
-        if board.gives_check(move):
-            if board.turn == chess.WHITE:
-                white_check_one_move_away += 1
-            else:
-                black_check_one_move_away += 1
+    if board.turn == chess.WHITE:
+        white_check_one_move_away = sum(
+            1 for move in board.legal_moves if board.gives_check(move)
+        )
+    else:
+        black_check_one_move_away = sum(
+            1 for move in board.legal_moves if board.gives_check(move)
+        )
+
     return (white_check_one_move_away, black_check_one_move_away)
 
 
 def legal_moves_per_side(fen_str: str) -> int:
     board = chess.Board(fen_str)
-    black_moves = 0
     white_moves = 0
+    black_moves = 0
+
+    # Count moves for current turn
     if board.turn == chess.WHITE:
-        white_moves = len(list(board.legal_moves))
+        white_moves = sum(1 for _ in board.legal_moves)
     else:
-        black_moves = len(list(board.legal_moves))
+        black_moves = sum(1 for _ in board.legal_moves)
+
+    # Flip turn and count moves for the other side
     board.turn = not board.turn
     if board.turn == chess.WHITE:
-        white_moves = len(list(board.legal_moves))
+        white_moves = sum(1 for _ in board.legal_moves)
     else:
-        black_moves = len(list(board.legal_moves))
+        black_moves = sum(1 for _ in board.legal_moves)
+
     return (black_moves, white_moves)
 
 
@@ -566,40 +622,21 @@ def isolated_pawns(fen_str: str) -> tuple:
 
 
 def is_isolated(board: chess.Board, color: chess.Color, square: int) -> int:
-    # check if the pawn square +1 and -1 are not occupied by
-    # check the right and left collum if not first and last column
-    if square % 8 != 0 and square % 8 != 7:
-        # check the right and left collum
-        for i in range(0, 63):
-            if i % 8 == (square + 1) % 8 or i % 8 == (square - 1) % 8:
-                # check if piece here is a pawn
-                if (
-                    board.piece_at(i) is not None
-                    and board.piece_at(i).piece_type == chess.PAWN
-                    and board.piece_at(i).color == color
-                ):
-                    return 0
-    else:
-        if square % 8 == 0:
-            for i in range(0, 63):
-                if i % 8 == (square + 1) % 8:
-                    # check if piece here is a pawn
-                    if (
-                        board.piece_at(i) is not None
-                        and board.piece_at(i).piece_type == chess.PAWN
-                        and board.piece_at(i).color == color
-                    ):
-                        return 0
-        elif square % 8 == 7:
-            for i in range(0, 63):
-                if i % 8 == (square - 1) % 8:
-                    # check if piece here is a pawn
-                    if (
-                        board.piece_at(i) is not None
-                        and board.piece_at(i).piece_type == chess.PAWN
-                        and board.piece_at(i).color == color
-                    ):
-                        return 0
+    file = chess.square_file(square)
+    pawns = board.pieces(chess.PAWN, color)
+
+    # Check left file (if not on a-file)
+    if file > 0:
+        left_file_mask = chess.BB_FILES[file - 1]
+        if pawns & left_file_mask:
+            return 0
+
+    # Check right file (if not on h-file)
+    if file < 7:
+        right_file_mask = chess.BB_FILES[file + 1]
+        if pawns & right_file_mask:
+            return 0
+
     return 1
 
 
@@ -607,27 +644,32 @@ def double_pawns(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_double_pawns = np.zeros(64, dtype=np.uint8)
     black_double_pawns = np.zeros(64, dtype=np.uint8)
+
+    # Group pawns by file for efficiency
+    white_pawns_by_file = {}
     for square in board.pieces(chess.PAWN, chess.WHITE):
-        # check column, if multiple in same colmn add to bitboard
-        for i in range(0, 63):
-            if i != square and i % 8 == square % 8:  # same column
-                if (
-                    board.piece_at(i) is not None
-                    and board.piece_at(i).piece_type == chess.PAWN
-                    and board.piece_at(i).color == chess.WHITE
-                ):
-                    white_double_pawns[square] = 1
-                    white_double_pawns[i] = 1
+        file = chess.square_file(square)
+        if file not in white_pawns_by_file:
+            white_pawns_by_file[file] = []
+        white_pawns_by_file[file].append(square)
+
+    for file, squares in white_pawns_by_file.items():
+        if len(squares) > 1:
+            for sq in squares:
+                white_double_pawns[sq] = 1
+
+    black_pawns_by_file = {}
     for square in board.pieces(chess.PAWN, chess.BLACK):
-        for i in range(0, 63):
-            if i != square and i % 8 == square % 8:  # same column
-                if (
-                    board.piece_at(i) is not None
-                    and board.piece_at(i).piece_type == chess.PAWN
-                    and board.piece_at(i).color == chess.BLACK
-                ):
-                    black_double_pawns[square] = 1
-                    black_double_pawns[i] = 1
+        file = chess.square_file(square)
+        if file not in black_pawns_by_file:
+            black_pawns_by_file[file] = []
+        black_pawns_by_file[file].append(square)
+
+    for file, squares in black_pawns_by_file.items():
+        if len(squares) > 1:
+            for sq in squares:
+                black_double_pawns[sq] = 1
+
     return (white_double_pawns, black_double_pawns)
 
 
@@ -658,73 +700,74 @@ def rook_on_semi_open_file(fen_str: str) -> tuple:
 
 
 def is_semi_open_file(board: chess.Board, color: chess.Color, square: int) -> int:
-    for i in range(0, 63):
-        if i != square and i % 8 == square % 8:
-            if (
-                board.piece_at(i) is not None
-                and board.piece_at(i).piece_type == chess.PAWN
-                and board.piece_at(i).color == color
-            ):
-                return 0
-    return 1
+    file = chess.square_file(square)
+    file_mask = chess.BB_FILES[file]
+    pawns_on_file = board.pieces(chess.PAWN, color) & file_mask
+    # Check if there are any pawns of this color on this file (excluding the rook square)
+    return 0 if pawns_on_file & ~chess.BB_SQUARES[square] else 1
 
 
 def rooks_on_same_file(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_rooks_on_same_file = np.zeros(64, dtype=np.uint8)
     black_rooks_on_same_file = np.zeros(64, dtype=np.uint8)
+
+    # Group rooks by file for efficiency
+    white_rooks_by_file = {}
     for square in board.pieces(chess.ROOK, chess.WHITE):
-        # check column, if multiple in same colmn add to bitboard
-        for i in range(0, 63):
-            if i != square and i % 8 == square % 8:  # same column
-                if (
-                    board.piece_at(i) is not None
-                    and board.piece_at(i).piece_type == chess.ROOK
-                    and board.piece_at(i).color == chess.WHITE
-                ):
-                    white_rooks_on_same_file[square] = 1
-                    white_rooks_on_same_file[i] = 1
+        file = chess.square_file(square)
+        if file not in white_rooks_by_file:
+            white_rooks_by_file[file] = []
+        white_rooks_by_file[file].append(square)
+
+    for file, squares in white_rooks_by_file.items():
+        if len(squares) > 1:
+            for sq in squares:
+                white_rooks_on_same_file[sq] = 1
+
+    black_rooks_by_file = {}
     for square in board.pieces(chess.ROOK, chess.BLACK):
-        for i in range(0, 63):
-            if i != square and i % 8 == square % 8:  # same column
-                if (
-                    board.piece_at(i) is not None
-                    and board.piece_at(i).piece_type == chess.ROOK
-                    and board.piece_at(i).color == chess.BLACK
-                ):
-                    black_rooks_on_same_file[square] = 1
-                    black_rooks_on_same_file[i] = 1
+        file = chess.square_file(square)
+        if file not in black_rooks_by_file:
+            black_rooks_by_file[file] = []
+        black_rooks_by_file[file].append(square)
+
+    for file, squares in black_rooks_by_file.items():
+        if len(squares) > 1:
+            for sq in squares:
+                black_rooks_on_same_file[sq] = 1
+
     return (white_rooks_on_same_file, black_rooks_on_same_file)
 
 
 def is_forking(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
+    return is_forking_board(board)
+
+
+def is_forking_board(board: chess.Board) -> tuple:
     white_forking = 0
     black_forking = 0
 
     # Check white knights
     for knight_square in board.pieces(chess.KNIGHT, chess.WHITE):
-        attacked_pieces = 0
-        # Get all squares this specific knight attacks
         attacks = board.attacks(knight_square)
-        for target_square in attacks:
-            # Check if there's an enemy piece on this square
-            piece = board.piece_at(target_square)
-            if piece is not None and piece.color == chess.BLACK:
-                attacked_pieces += 1
+        attacked_pieces = sum(
+            1
+            for sq in attacks
+            if board.piece_at(sq) and board.piece_at(sq).color == chess.BLACK
+        )
         if attacked_pieces > 1:
             white_forking += 1
 
     # Check black knights
     for knight_square in board.pieces(chess.KNIGHT, chess.BLACK):
-        attacked_pieces = 0
-        # Get all squares this specific knight attacks
         attacks = board.attacks(knight_square)
-        for target_square in attacks:
-            # Check if there's an enemy piece on this square
-            piece = board.piece_at(target_square)
-            if piece is not None and piece.color == chess.WHITE:
-                attacked_pieces += 1
+        attacked_pieces = sum(
+            1
+            for sq in attacks
+            if board.piece_at(sq) and board.piece_at(sq).color == chess.WHITE
+        )
         if attacked_pieces > 1:
             black_forking += 1
 
@@ -735,22 +778,52 @@ def fork_available(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_fork_available = 0
     black_fork_available = 0
-    # make a knight move, use is_forking to check if it is a fork for that color
-    for knight_square in board.pieces(chess.KNIGHT, chess.WHITE):
-        attacks = board.attacks(knight_square)
-        for target_square in attacks:
-            # play the move
-            board.push(chess.Move(knight_square, target_square))
-            if is_forking(board.fen())[0] == 1:
-                white_fork_available += 1
-            board.pop()
-    for knight_square in board.pieces(chess.KNIGHT, chess.BLACK):
-        attacks = board.attacks(knight_square)
-        for target_square in attacks:
-            board.push(chess.Move(knight_square, target_square))
-            if is_forking(board.fen())[1] == 1:
-                black_fork_available += 1
-            board.pop()
+
+    # Check knights for current turn
+    if board.turn == chess.WHITE:
+        for knight_square in board.pieces(chess.KNIGHT, chess.WHITE):
+            attacks = board.attacks(knight_square)
+            for target_square in attacks:
+                move = chess.Move(knight_square, target_square)
+                if move in board.legal_moves:
+                    board.push(move)
+                    if is_forking_board(board)[0] == 1:
+                        white_fork_available += 1
+                    board.pop()
+    else:
+        for knight_square in board.pieces(chess.KNIGHT, chess.BLACK):
+            attacks = board.attacks(knight_square)
+            for target_square in attacks:
+                move = chess.Move(knight_square, target_square)
+                if move in board.legal_moves:
+                    board.push(move)
+                    if is_forking_board(board)[1] == 1:
+                        black_fork_available += 1
+                    board.pop()
+
+    board.turn = not board.turn
+    if board.turn == chess.WHITE:
+        # Check white knights
+        for knight_square in board.pieces(chess.KNIGHT, chess.WHITE):
+            attacks = board.attacks(knight_square)
+            for target_square in attacks:
+                move = chess.Move(knight_square, target_square)
+                if move in board.legal_moves:
+                    board.push(move)
+                    if is_forking_board(board)[0] == 1:
+                        white_fork_available += 1
+                    board.pop()
+    else:
+        for knight_square in board.pieces(chess.KNIGHT, chess.BLACK):
+            attacks = board.attacks(knight_square)
+            for target_square in attacks:
+                move = chess.Move(knight_square, target_square)
+                if move in board.legal_moves:
+                    board.push(move)
+                    if is_forking_board(board)[1] == 1:
+                        black_fork_available += 1
+                    board.pop()
+
     return (white_fork_available, black_fork_available)
 
 
@@ -851,11 +924,18 @@ def hanging_pieces_bitboards(fen_str: str) -> tuple:
 
 def center_control(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
-    white_center_control = 0
-    black_center_control = 0
-    center_squares = ["e4", "e5", "d4", "d5"]
-    for square in chess.SQUARES:
-        if chess.square_name(square) in center_squares:
-            white_center_control += len(list(board.attackers(chess.WHITE, square)))
-            black_center_control += len(list(board.attackers(chess.BLACK, square)))
+    center_squares = [chess.E4, chess.E5, chess.D4, chess.D5]
+    white_center_control = sum(
+        sum(1 for _ in board.attackers(chess.WHITE, sq)) for sq in center_squares
+    )
+    black_center_control = sum(
+        sum(1 for _ in board.attackers(chess.BLACK, sq)) for sq in center_squares
+    )
     return (white_center_control, black_center_control)
+
+
+def is_win(fen_str: str) -> int:
+    board = chess.Board(fen_str)
+    if board.is_checkmate():
+        return 1 if board.turn == chess.BLACK else -1
+    return 0
