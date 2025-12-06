@@ -587,7 +587,7 @@ def check_one_move_away(fen_str: str) -> tuple:
     return (white_check_one_move_away, black_check_one_move_away)
 
 
-def legal_moves_per_side(fen_str: str) -> int:
+def legal_moves_per_side(fen_str: str) -> tuple:
     board = chess.Board(fen_str)
     white_moves = 0
     black_moves = 0
