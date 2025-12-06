@@ -14,6 +14,7 @@ if ROOT not in sys.path:
 sys.path.append("Models/Training")
 
 from SlackFishCNN import SlackFishCNN_V1, SlackFishCNN_V2
+from Models import SlackFishCNN_V5
 import featureEng
 
 
@@ -48,25 +49,92 @@ def normalize(data_x):
     
     return x_scaled
 
-def predict(model:nn.Module, fenStr: str):
-    bitboards = fen_to_bitboards(fenStr)
-    board_array = np.stack([bitboards[piece] for piece in piece_order], axis=0)
-    features = np.array([
-        featureEng.piece_count(fenStr),
-        *featureEng.piece_mobility(fenStr),
-        featureEng.player_turn(fenStr),
-        featureEng.en_passant_available(fenStr),
-        featureEng.in_check(fenStr),
-        *featureEng.castling_rights(fenStr),
-        featureEng.pst_score(fenStr),
-    ]).reshape(1, -1)
-    features = normalize(features)
+def to_2ch(a, b):
+    return np.concatenate([a.reshape(1, 8, 8), b.reshape(1, 8, 8)], axis=0)
 
-    bitboards_t = torch.tensor(board_array, dtype=torch.float32).reshape(-1, 12, 8, 8)
-    features_t = torch.tensor(features, dtype=torch.float32)
+def predict(model:nn.Module, fenStr: str):
+
+
+
+    if type(model) in [SlackFishCNN_V1, SlackFishCNN_V2]:
+
+        bitboards = fen_to_bitboards(fenStr)
+        board_array = np.stack([bitboards[piece] for piece in piece_order], axis=0)
+        features = np.array([
+            featureEng.piece_count(fenStr),
+            *featureEng.legal_moves_per_side(fenStr),
+            featureEng.player_turn(fenStr),
+            featureEng.en_passant_available(fenStr),
+            featureEng.in_check(fenStr),
+            *featureEng.castling_rights(fenStr),
+            featureEng.pst_score(fenStr),
+        ]).reshape(1, -1)
+        features = normalize(features)
+        S_Y = Scaler_Y
+        bitboards_t = torch.tensor(board_array, dtype=torch.float32).reshape(-1, 12, 8, 8)
+        features_t = torch.tensor(features, dtype=torch.float32)
+
+
+    if type(model) == SlackFishCNN_V5:
+        bitboards = fen_to_bitboards(fenStr)
+        board_array = np.stack([bitboards[piece].reshape(8, 8) for piece in piece_order], axis=0)
+
+        iso_white, iso_black = featureEng.isolated_pawns(fenStr)
+        iso_stack = to_2ch(iso_white, iso_black)
+
+        dbl_white, dbl_black = featureEng.double_pawns(fenStr)
+        dbl_stack = to_2ch(dbl_white, dbl_black)
+
+        rook7_white, rook7_black = featureEng.rook_on_7th_rank(fenStr)
+        rook7_stack = to_2ch(rook7_white, rook7_black)
+
+        semi_white, semi_black = featureEng.rook_on_semi_open_file(fenStr)
+        semi_stack = to_2ch(semi_white, semi_black)
+
+        rsf_white, rsf_black = featureEng.rooks_on_same_file(fenStr)
+        rsf_stack = to_2ch(rsf_white, rsf_black)
+    
+        hang_white, hang_black = featureEng.hanging_pieces_bitboards(fenStr)
+        hang_stack = to_2ch(hang_white, hang_black)
+
+        board_array = np.concatenate([
+            board_array,
+            iso_stack,
+            dbl_stack,
+            rook7_stack,
+            semi_stack,
+            rsf_stack,
+            hang_stack
+        ], axis=0)
+
+
+        features = np.array([
+            featureEng.piece_count(fenStr),
+            featureEng.player_turn(fenStr),
+            featureEng.en_passant_available(fenStr),
+            featureEng.in_check(fenStr),
+            *featureEng.castling_rights(fenStr),
+            featureEng.pst_score(fenStr),
+            *featureEng.check_one_move_away(fenStr),
+            *featureEng.legal_moves_per_side(fenStr),
+            *featureEng.is_forking(fenStr),
+            *featureEng.bishop_activity(fenStr),
+            *featureEng.pinned_pieces(fenStr),
+            *featureEng.value_of_hanging_pieces(fenStr),
+            *featureEng.center_control(fenStr),
+            featureEng.is_win(fenStr),
+        ]).reshape(1, -1)
+        S_Y = Scaler_Y_V5_9M
+
+        bitboards_t = torch.tensor(board_array, dtype=torch.float32).unsqueeze(0)
+        features_t = torch.tensor(features, dtype=torch.float32)
+
+
+    # print("Bitboards shape:", bitboards_t.shape)
+    # print("Features shape:", features_t.shape)
 
     score_t = model(bitboards_t.to(device), features_t.to(device))
-    score = Scaler_Y.inverse_transform(score_t.cpu().detach().numpy())
+    score = S_Y.inverse_transform(score_t.cpu().detach().numpy())
     return score
 
 # Scoring function
@@ -78,21 +146,16 @@ def get_score(model:nn.Module, board: chess.Board, move: chess.Move):
 
 # Create objects
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model_white = SlackFishCNN_V1(11).to(device)
-# optimizer = torch.optim.Adam(
-#     model_white.parameters(),
-#     lr=0.001,
-#     eps=1e-8,
-#     weight_decay=1e-4,
-# )
+model_white = SlackFishCNN_V5(24,24).to(device)
 model_black = SlackFishCNN_V2(11).to(device)
 
 # Load scalers
 Scaler_X = joblib.load("Models/Scalers/scaler_X.pkl")
 Scaler_Y = joblib.load("Models/Scalers/scaler_Y.pkl")
+Scaler_Y_V5_9M = joblib.load("Models/Scalers/scaler_Y_9M.pkl")
 
 # Load model weights
-model_path_white = "Models/Weights/SlackFishCNN_V1_499"
+model_path_white = "Models/Weights/SlackFishCNN_V5_79"
 model_path_black = "Models/Weights/SlackFishCNN_V2_449"
 
 checkpoint_white = torch.load(model_path_white, map_location="cuda")
