@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SlackFish</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.base.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.brown.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.cburnett.css">
+<style>
+  :root {
+    --bg: #f4f1ec; --panel: #ffffff; --text: #26231f; --muted: #6f6a62;
+    --border: #ddd6cb; --accent: #7a5c3a; --accent-text: #fff;
+    --bar-white: #f7f5f1; --bar-black: #3a3631;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1d1b19; --panel: #282522; --text: #ece7df; --muted: #a39d93;
+      --border: #3d3934; --accent: #c49a6c; --accent-text: #1d1b19;
+      --bar-white: #e9e5de; --bar-black: #45403a;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    display: flex; gap: 20px; justify-content: center; align-items: flex-start;
+    padding: 20px 16px; flex-wrap: wrap;
+  }
+  .board-col { display: flex; gap: 10px; }
+  #board { width: min(78vh, calc(100vw - 64px)); height: min(78vh, calc(100vw - 64px)); }
+  .evalbar {
+    width: 18px; border-radius: 4px; overflow: hidden; position: relative;
+    background: var(--bar-black); border: 1px solid var(--border);
+  }
+  .evalbar .white { position: absolute; left: 0; right: 0; bottom: 0; background: var(--bar-white); transition: height .3s; }
+  .evalbar.flipped .white { bottom: auto; top: 0; }
+  .panel {
+    width: 300px; max-width: 100%; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 14px;
+  }
+  h1 { font-size: 20px; margin: 0; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 3px; }
+  select, button {
+    width: 100%; font: inherit; padding: 7px 9px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { font-weight: 600; min-height: 1.4em; }
+  #evaltext { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #moves {
+    height: 260px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; font-variant-numeric: tabular-nums; background: var(--bg);
+  }
+  #moves .m { display: grid; grid-template-columns: 36px 1fr 1fr; padding: 1px 0; }
+  #moves .n { color: var(--muted); }
+  #promo {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  #promo .box { background: var(--panel); padding: 14px; border-radius: 10px; display: flex; gap: 8px; }
+  /* Chessground's base CSS sets pointer-events: none on .cg-wrap pieces; re-enable them in the picker */
+  #promo piece { position: static; display: block; width: 64px; height: 64px; cursor: pointer; border-radius: 6px; pointer-events: auto; }
+  #promo piece:hover { background-color: var(--border); }
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: -1px; margin-right: 6px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<main>
+  <div class="board-col">
+    <div class="evalbar" id="evalbar"><div class="white" id="evalwhite" style="height:50%"></div></div>
+    <div id="board" class="cg-wrap"></div>
+  </div>
+
+  <div class="panel">
+    <h1>SlackFish</h1>
+    <div class="row">
+      <div><label for="bot">Bot</label><select id="bot"></select></div>
+      <div><label for="depth">Depth</label>
+        <select id="depth"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+    </div>
+    <div class="row">
+      <div><label for="color">You play</label>
+        <select id="color"><option value="white">White</option><option value="black">Black</option></select></div>
+      <div><label>&nbsp;</label><button class="primary" id="new">New game</button></div>
+    </div>
+    <div>
+      <div id="status"></div>
+      <div id="evaltext"></div>
+    </div>
+    <div id="moves"></div>
+    <div class="row">
+      <button id="undo">Undo</button>
+      <button id="flip">Flip</button>
+      <button id="pgn">PGN</button>
+    </div>
+    <div class="row" id="export" hidden>
+      <button id="gif">Save GIF</button>
+      <button id="png">Save PNG</button>
+    </div>
+  </div>
+</main>
+
+<div id="promo"><div class="box cg-wrap" id="promobox"></div></div>
+
+<script type="module">
+import { Chessground } from "https://cdn.jsdelivr.net/npm/chessground@9.2.1/+esm";
+
+const $ = (id) => document.getElementById(id);
+let state = null, busy = false, orientation = "white";
+
+const cg = Chessground($("board"), {
+  coordinates: true,
+  animation: { duration: 200 },
+  premovable: { enabled: false },
+  movable: { free: false, showDests: true, events: { after: onUserMove } },
+  highlight: { lastMove: true, check: true },
+});
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function render(s, thinking = false) {
+  state = s;
+  const humanTurn = !s.gameOver && s.turn === s.humanColor && !thinking;
+  cg.set({
+    fen: s.fen,
+    orientation,
+    turnColor: s.turn,
+    lastMove: s.lastMove || undefined,
+    check: s.check ? s.turn : false,
+    movable: { color: humanTurn ? s.humanColor : undefined, dests: new Map(Object.entries(s.dests)) },
+  });
+
+  $("undo").disabled = thinking || s.history.length === 0;
+  $("export").hidden = !s.gameOver;
+
+  // Status
+  let status;
+  if (s.gameOver) {
+    const youWon = (s.result === "1-0") === (s.humanColor === "white");
+    status = s.result === "1/2-1/2" ? `Draw (${s.reason})` : `${youWon ? "You win" : `${s.bot} wins`} by ${s.reason}`;
+  } else if (thinking) {
+    status = `<span class="spin"></span>${s.bot} is thinking…`;
+  } else {
+    status = s.turn === s.humanColor ? "Your move" + (s.check ? " (check)" : "") : "";
+  }
+  $("status").innerHTML = status;
+
+  // Eval (White's perspective, centipawns)
+  if (s.eval === null) {
+    $("evaltext").textContent = "";
+    $("evalwhite").style.height = "50%";
+  } else {
+    const mate = Math.abs(s.eval) > 90000;
+    $("evaltext").textContent = `${s.bot} eval: ` + (mate
+      ? (s.eval > 0 ? "White mates" : "Black mates")
+      : `${s.eval >= 0 ? "+" : ""}${(s.eval / 100).toFixed(2)}`);
+    const pct = 100 / (1 + Math.exp(-s.eval / 400));
+    $("evalwhite").style.height = `${Math.max(3, Math.min(97, pct))}%`;
+  }
+  $("evalbar").classList.toggle("flipped", orientation === "black");
+
+  // Move list
+  let html = "";
+  for (let i = 0; i < s.history.length; i += 2) {
+    html += `<div class="m"><span class="n">${i / 2 + 1}.</span><span>${s.history[i]}</span><span>${s.history[i + 1] || ""}</span></div>`;
+  }
+  $("moves").innerHTML = html;
+  $("moves").scrollTop = $("moves").scrollHeight;
+}
+
+function syncControls(s) {
+  $("bot").innerHTML = s.bots.map((b) => `<option>${b}</option>`).join("");
+  $("bot").value = s.bot; $("depth").value = String(s.depth); $("color").value = s.humanColor;
+}
+
+async function botTurn() {
+  if (!state || state.gameOver || state.turn === state.humanColor) return;
+  busy = true;
+  render(state, true);
+  try { render(await api("/api/bot", {})); }
+  catch (e) { $("status").textContent = "Error: " + e.message; }
+  finally { busy = false; }
+}
+
+// Resolves to "q" / "r" / "b" / "n", or null if dismissed (click outside or Escape)
+function askPromotion(color) {
+  return new Promise((resolve) => {
+    const overlay = $("promo"), box = $("promobox");
+    const finish = (letter) => {
+      overlay.style.display = "none";
+      overlay.onclick = null;
+      document.removeEventListener("keydown", onKey);
+      resolve(letter);
+    };
+    const onKey = (e) => { if (e.key === "Escape") finish(null); };
+
+    box.innerHTML = "";
+    for (const [role, letter] of [["queen", "q"], ["rook", "r"], ["bishop", "b"], ["knight", "n"]]) {
+      const p = document.createElement("piece");
+      p.className = `${color} ${role}`;
+      p.title = role;
+      p.onclick = (e) => { e.stopPropagation(); finish(letter); };
+      box.appendChild(p);
+    }
+    overlay.onclick = () => finish(null);
+    document.addEventListener("keydown", onKey);
+    overlay.style.display = "flex";
+  });
+}
+
+async function onUserMove(orig, dest) {
+  let uci = orig + dest;
+  const piece = cg.state.pieces.get(dest);
+  if (piece && piece.role === "pawn" && (dest[1] === "8" || dest[1] === "1")) {
+    const letter = await askPromotion(piece.color);
+    if (!letter) { render(state); return; }   // cancelled: put the pawn back
+    uci += letter;
+  }
+  try { render(await api("/api/move", { uci })); }
+  catch (e) { render(await api("/api/state")); return; }
+  botTurn();
+}
+
+$("new").onclick = async () => {
+  if (busy) return;
+  const color = $("color").value;
+  orientation = color;
+  $("status").innerHTML = `<span class="spin"></span>Loading ${$("bot").value}…`;
+  try {
+    const s = await api("/api/new", { bot: $("bot").value, depth: $("depth").value, color });
+    syncControls(s);
+    render(s);
+    botTurn();
+  } catch (e) { $("status").textContent = "Error: " + e.message; }
+};
+$("undo").onclick = async () => {
+  if (busy) return;
+  render(await api("/api/undo", {}));
+  botTurn();   // if we undid back to the start as Black, the bot moves again
+};
+$("flip").onclick = () => { orientation = orientation === "white" ? "black" : "white"; render(state, busy); };
+async function download(path, filename, button) {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Rendering…";
+  try {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(res.statusText);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await res.blob());
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    $("status").textContent = "Export failed: " + e.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+$("pgn").onclick = () => download("/api/pgn", "slackfish.pgn", $("pgn"));
+$("gif").onclick = () => download("/api/export.gif", "slackfish.gif", $("gif"));
+$("png").onclick = () => download("/api/export.png", "slackfish.png", $("png"));
+
+const initial = await api("/api/state");
+orientation = initial.humanColor;
+syncControls(initial);
+render(initial);
+botTurn();
+</script>
+</body>
+</html>
