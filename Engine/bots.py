@@ -13,12 +13,14 @@ from dataclasses import dataclass
 from typing import Callable
 
 import chess
+import chess.polyglot
 import joblib
 import numpy as np
 import torch
 import torch.nn as nn
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DEFAULT_BOOK = os.path.join(ROOT, "Models", "Books", "gm2001.bin")
 for p in (ROOT, os.path.join(ROOT, "Models", "Training")):
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -136,6 +138,7 @@ BOTS = {
     "t1-3.25m": NoFeatSpec("Models/Weights/SlackFishV-T1-3.25M/best.pt"),
     "t1-alpha": NoFeatSpec("Models/Weights/SlackFishV-T1-alpha/best.pt"),
     "t2-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-6.41M/best.pt"),   # ChessTransformerV2
+    "t2-w-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-6.41M/best.pt"),   # V2, win-probability target
 }
 
 
@@ -183,22 +186,97 @@ def terminal_score(board: chess.Board, ply: int):
     return None
 
 
-def ordered_moves(board: chess.Board):
-    """Captures and promotions first, which lets alpha-beta prune more."""
-    return sorted(board.legal_moves,
-                  key=lambda m: not (board.is_capture(m) or m.promotion))
+def quiet_terminal_score(board: chess.Board, ply: int):
+    """Cheaper terminal check for quiescence nodes: checkmate and dead positions only
+    (captures can't repeat a position or reset into a fifty-move draw)."""
+    if board.is_checkmate():
+        return -(MATE_SCORE - ply) if board.turn == chess.WHITE else MATE_SCORE - ply
+    if board.is_insufficient_material():
+        return 0.0
+    return None
+
+
+PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 100}
+EXACT, LOWER, UPPER = 0, 1, 2   # transposition table bound types
+MATE_BOUND = MATE_SCORE - 1000  # scores beyond this are mates, stored relative to the node
+
+
+def _to_tt(score, ply):
+    """Mate scores count plies from the root; store them as plies from this node."""
+    return score + ply if score > MATE_BOUND else score - ply if score < -MATE_BOUND else score
+
+
+def _from_tt(score, ply):
+    return score - ply if score > MATE_BOUND else score + ply if score < -MATE_BOUND else score
+
+
+def good_captures(board: chess.Board):
+    """Captures worth searching in quiescence, plus queen promotions. A capture is
+    skipped when it gives up a more valuable piece on a defended square (a cheap
+    stand-in for static exchange evaluation)."""
+    them = not board.turn
+    moves = []
+    for m in board.generate_legal_captures():
+        if m.promotion and m.promotion != chess.QUEEN:
+            continue
+        victim = chess.PAWN if board.is_en_passant(m) else board.piece_type_at(m.to_square)
+        attacker = board.piece_type_at(m.from_square)
+        if PIECE_VALUES[victim] >= PIECE_VALUES[attacker] or not board.is_attacked_by(them, m.to_square):
+            moves.append(m)
+    pawns = board.pawns & board.occupied_co[board.turn] & (chess.BB_RANK_7 if board.turn else chess.BB_RANK_2)
+    for m in board.generate_legal_moves(from_mask=pawns, to_mask=~board.occupied):
+        if m.promotion == chess.QUEEN:
+            moves.append(m)
+    return moves
+
+
+class OpeningBook:
+    """A Polyglot (.bin) opening book. pick() returns a book move for the
+    position, sampled in proportion to the book's weights (how often it was
+    played), or None once the game is out of book or past max_plies.
+    Moves with under min_share of the position's total weight are ignored, so
+    one-off oddities in the source games aren't played."""
+
+    def __init__(self, path: str = DEFAULT_BOOK, max_plies: int = 16, min_share: float = 0.02):
+        self.path = path
+        self.max_plies = max_plies
+        self.min_share = min_share
+        self.reader = chess.polyglot.open_reader(path)
+
+    def __str__(self):
+        return os.path.basename(self.path)
+
+    def pick(self, board: chess.Board, rng: np.random.Generator) -> chess.Move | None:
+        if board.ply() >= self.max_plies:
+            return None
+        entries = list(self.reader.find_all(board))
+        total = sum(e.weight for e in entries)
+        entries = [e for e in entries if e.weight >= self.min_share * total and e.weight > 0]
+        if not entries:
+            return None
+        weights = np.array([e.weight for e in entries], dtype=float)
+        return entries[rng.choice(len(entries), p=weights / weights.sum())].move
 
 
 class Bot:
-    """Minimax with alpha-beta pruning over a neural evaluator.
+    """Alpha-beta search over a neural evaluator.
 
-    depth=1 matches the original scripts: score every legal move, pick the best.
-    Leaf positions are evaluated in one batch per node, so the model sees
-    ~30 positions per forward pass instead of one.
+    Search: iterative deepening (depth 1, 2, ... self.depth) with a transposition
+    table, then quiescence search at the leaves. Every node scores all its children
+    in one batched forward pass and searches them best-first by that score, which
+    orders moves well enough for alpha-beta to prune most of the tree. The
+    transposition table keeps each position's score, bound type and best move, so
+    repeated positions and the next iteration (or next move) start from the best
+    move found so far.
 
-    Network scores are cached by position for the bot's lifetime, so positions
-    reached by transposition, or again in the next move's search, skip the
-    model. When the cache passes cache_size entries the oldest quarter is dropped.
+    Quiescence: past the depth limit, only captures and queen promotions are
+    searched (checks get every evasion), for up to quiescence_depth plies. The side
+    to move can always "stand pat" on the network score, so a quiet position costs
+    nothing extra, but the search no longer stops halfway through an exchange.
+    quiescence_depth=0 turns it off (depth 1 then just picks the best-scoring move).
+
+    Network scores are cached by position for the bot's lifetime. Both caches drop
+    their oldest quarter when they pass cache_size entries.
 
     temperature=0 always plays the best move. temperature>0 samples a move from
     softmax(score / temperature), with the temperature in centipawns: at 50, a
@@ -209,91 +287,105 @@ class Bot:
     worse than the best are pruned and given probability 0: each would have had
     at most e^-sample_margin (1.8% at the default 4) of the best move's
     probability. sample_margin=None scores every move exactly.
+
+    book: an OpeningBook. While the position is in it, the bot plays a book move
+    (sampled by the book's weights, from the same seeded rng) instead of
+    searching, and search() returns None as the score.
     """
 
     def __init__(self, name: str, evaluator: Evaluator, depth: int = 1,
                  cache_size: int = 1_000_000, temperature: float = 0.0, seed: int | None = None,
-                 sample_margin: float | None = 4.0):
+                 sample_margin: float | None = 4.0, quiescence_depth: int = 6,
+                 book: OpeningBook | None = None):
         self.name = name
         self.evaluator = evaluator
         self.depth = depth
         self.temperature = temperature
         self.sample_margin = sample_margin
+        self.quiescence_depth = quiescence_depth
+        self.book = book
+        self.last_book = False   # whether the last search() played a book move
         self.rng = np.random.default_rng(seed)
         self.last_distribution = None   # (moves, scores, probs) from the last sampled move
         self.cache_size = cache_size
-        self.cache: dict[int, float] = {}
+        self.cache: dict[int, float] = {}   # position -> network score
+        self.tt: dict[int, tuple] = {}      # position -> (depth, score, bound, best move)
         self.nodes = 0        # positions scored by the model in the last search
         self.cache_hits = 0   # positions answered from the cache in the last search
 
     def __str__(self):
         temp = f", temperature {self.temperature:g}" if self.temperature > 0 else ""
-        return f"SlackFish-{self.name} (depth {self.depth}{temp})"
+        quiet = ("" if self.quiescence_depth == 6 else ", no quiescence" if self.quiescence_depth == 0
+                 else f", quiescence {self.quiescence_depth}")
+        book = f", book {self.book}" if self.book else ""
+        return f"SlackFish-{self.name} (depth {self.depth}{quiet}{temp}{book})"
 
     def choose_move(self, board: chess.Board) -> chess.Move:
         return self.search(board)[0]
 
+    # --- root -----------------------------------------------------------------
+
     def search(self, board: chess.Board):
-        """Return (move, white-perspective score): the best move, or a sampled one if temperature > 0."""
+        """Return (move, white-perspective score): the best move, or a sampled one if
+        temperature > 0. A book move returns score None."""
+        self.last_book = False
+        if self.book is not None:
+            move = self.book.pick(board, self.rng)
+            if move is not None:
+                self.nodes = self.cache_hits = 0
+                self.last_distribution = None
+                self.last_book = True
+                return move, None
         if self.temperature > 0:
             moves, scores, probs = self.move_distribution(board)
             i = self.rng.choice(len(moves), p=probs)
             return moves[i], float(scores[i])
-
-        self.nodes = self.cache_hits = 0
-        board = board.copy()
-        maximizing = board.turn == chess.WHITE
-        if self.depth <= 1:
-            moves, scores = self._score_children(board, ply=1)
-            best = int(np.argmax(scores) if maximizing else np.argmin(scores))
-            return moves[best], float(scores[best])
-
-        alpha, beta = -float('inf'), float('inf')
-        best_move, best_score = None, None
-        for move in ordered_moves(board):
-            board.push(move)
-            score = self._minimax(board, self.depth - 1, alpha, beta, ply=1)
-            board.pop()
-            if best_score is None or (score > best_score if maximizing else score < best_score):
-                best_move, best_score = move, score
-            if maximizing:
-                alpha = max(alpha, score)
-            else:
-                beta = min(beta, score)
-        return best_move, best_score
+        moves, scores = self.root_scores(board, margin=0.0)
+        sign = 1 if board.turn == chess.WHITE else -1
+        best = int(np.nanargmax(sign * scores))
+        return moves[best], float(scores[best])
 
     def root_scores(self, board: chess.Board, margin: float | None = None):
-        """White-perspective score of every legal move. With margin=None every score is
-        exact. Otherwise only moves within margin cp of the best are scored exactly and
-        the rest are NaN: each root move is searched with its window's bound at
-        best_so_far - margin, so alpha-beta can cut a move off as soon as it is provably
-        that much worse. Depth 1 is a single batch and always exact."""
+        """White-perspective score of every legal move after iterative deepening to
+        self.depth. margin=None: every score is exact. Otherwise only moves within
+        margin cp of the best are scored exactly and the rest are NaN (margin=0 is
+        plain alpha-beta: only the best move is exact). Each root move is searched
+        with its window's bound at best_so_far - margin, so alpha-beta can cut a
+        move off as soon as it is provably that much worse."""
         self.nodes = self.cache_hits = 0
         board = board.copy()
-        if self.depth <= 1:
-            return self._score_children(board, ply=1)
-
-        sign = 1 if board.turn == chess.WHITE else -1   # scores from the mover's side = sign * score
-        # Search the most promising moves first (one cheap depth-1 batch), so the
-        # best score, and with it the cutoff, is found early.
-        moves, quick = self._score_children(board, ply=1)
-        order = np.argsort(-sign * quick)
-        moves = [moves[i] for i in order]
-        scores = np.full(len(moves), np.nan)
-        best = None   # best score so far, mover's side
-        for i, move in enumerate(moves):
-            floor = -float('inf') if margin is None or best is None else best - margin
-            alpha, beta = (floor, float('inf')) if sign == 1 else (-float('inf'), -floor)
-            board.push(move)
-            score = sign * self._minimax(board, self.depth - 1, alpha, beta, ply=1)
-            board.pop()
-            if score <= floor:
-                continue   # failed low: an upper bound, so at least margin worse than the best
-            scores[i] = sign * score
-            best = score if best is None else max(best, score)
-        if margin is not None:   # moves that were close when searched but fell behind a later best
-            scores[sign * scores < best - margin] = np.nan
+        moves, statics, terminal = self._score_children(board, ply=1)
+        sign = 1 if board.turn == chess.WHITE else -1
+        order = list(np.argsort(-sign * statics, kind="stable"))
+        for depth in range(1, self.depth + 1):
+            last = depth == self.depth
+            scores, bounds = self._root_pass(board, moves, statics, terminal, order, depth,
+                                             margin if last else 0.0)
+            order = sorted(order, key=lambda i: -sign * bounds[i])   # best move first next time
         return moves, scores
+
+    def _root_pass(self, board, moves, statics, terminal, order, depth, margin):
+        sign = 1 if board.turn == chess.WHITE else -1
+        scores = np.full(len(moves), np.nan)
+        bounds = np.array(statics, dtype=float)
+        best = None   # best score so far, mover's side
+        for i in order:
+            floor = -float('inf') if margin is None or best is None else best - margin
+            if terminal[i]:
+                value = statics[i]
+            else:
+                alpha, beta = (floor, float('inf')) if sign == 1 else (-float('inf'), -floor)
+                board.push(moves[i])
+                value = self._search(board, depth - 1, alpha, beta, 1, statics[i])
+                board.pop()
+            bounds[i] = value
+            if sign * value <= floor and best is not None:
+                continue   # failed low: an upper bound, at least margin worse than the best
+            scores[i] = value
+            best = sign * value if best is None else max(best, sign * value)
+        if margin:   # moves that were close when searched but fell behind a later best
+            scores[sign * scores < best - margin] = np.nan
+        return scores, bounds
 
     def move_distribution(self, board: chess.Board, temperature: float | None = None):
         """Return (moves, white-perspective scores, probabilities) with
@@ -308,40 +400,114 @@ class Bot:
         self.last_distribution = (moves, scores, probs)
         return moves, scores, probs
 
-    def _minimax(self, board, depth, alpha, beta, ply):
-        term = terminal_score(board, ply)
-        if term is not None:
-            return term
-        if depth == 1:
-            _, scores = self._score_children(board, ply + 1)
-            return float(scores.max() if board.turn == chess.WHITE else scores.min())
+    # --- tree -----------------------------------------------------------------
 
+    def _search(self, board, depth, alpha, beta, ply, static):
+        """White-perspective value of board (not game over; its network score is
+        static) searched depth more plies, then quiescence. Fail-soft: a result
+        <= alpha is an upper bound, >= beta a lower bound."""
+        if depth <= 0:
+            return self._quiesce(board, alpha, beta, ply, static, 0)
+
+        key = hash(board._transposition_key())
+        entry = self.tt.get(key)
+        tt_move = None
+        if entry is not None:
+            entry_depth, value, bound, tt_move = entry
+            value = _from_tt(value, ply)
+            if entry_depth >= depth and (bound == EXACT or (bound == LOWER and value >= beta)
+                                         or (bound == UPPER and value <= alpha)):
+                return value
+
+        alpha0, beta0 = alpha, beta
         maximizing = board.turn == chess.WHITE
-        best = -float('inf') if maximizing else float('inf')
-        for move in ordered_moves(board):
-            board.push(move)
-            score = self._minimax(board, depth - 1, alpha, beta, ply + 1)
-            board.pop()
-            if maximizing:
-                best = max(best, score)
-                alpha = max(alpha, best)
+        sign = 1 if maximizing else -1
+        moves, statics, terminal = self._score_children(board, ply + 1)
+        order = sorted(range(len(moves)), key=lambda i: -sign * statics[i])
+        if tt_move is not None and tt_move in moves:
+            first = moves.index(tt_move)
+            order.remove(first)
+            order.insert(0, first)
+
+        best, best_move = -sign * float('inf'), None
+        for i in order:
+            if terminal[i]:
+                value = statics[i]
             else:
-                best = min(best, score)
-                beta = min(beta, best)
+                board.push(moves[i])
+                value = self._search(board, depth - 1, alpha, beta, ply + 1, statics[i])
+                board.pop()
+            if sign * value > sign * best:
+                best, best_move = value, moves[i]
+            if maximizing:
+                alpha = max(alpha, value)
+            else:
+                beta = min(beta, value)
+            if alpha >= beta:
+                break
+
+        bound = UPPER if best <= alpha0 else LOWER if best >= beta0 else EXACT
+        self._store(self.tt, key, (depth, _to_tt(best, ply), bound, best_move))
+        return best
+
+    def _quiesce(self, board, alpha, beta, ply, static, qply):
+        """Search captures (or every evasion when in check) until the position is quiet."""
+        maximizing = board.turn == chess.WHITE
+        sign = 1 if maximizing else -1
+        in_check = board.is_check()
+        if qply >= self.quiescence_depth:
+            return static
+        if in_check:   # no standing pat in check: every evasion is searched
+            best = -sign * float('inf')
+            moves = list(board.legal_moves)   # not empty: the caller caught checkmate
+        else:
+            best = static   # stand pat: the side to move can decline every capture
+            if maximizing:
+                if static >= beta:
+                    return static
+                alpha = max(alpha, static)
+            else:
+                if static <= alpha:
+                    return static
+                beta = min(beta, static)
+            moves = good_captures(board)
+            if not moves:
+                return static
+
+        moves, statics, terminal = self._score_children(board, ply + 1, moves, quiet=True)
+        for i in sorted(range(len(moves)), key=lambda i: -sign * statics[i]):
+            if terminal[i]:
+                value = statics[i]
+            else:
+                board.push(moves[i])
+                value = self._quiesce(board, alpha, beta, ply + 1, statics[i], qply + 1)
+                board.pop()
+            if sign * value > sign * best:
+                best = value
+            if maximizing:
+                alpha = max(alpha, value)
+            else:
+                beta = min(beta, value)
             if alpha >= beta:
                 break
         return best
 
-    def _score_children(self, board, ply):
-        """Score every legal move from board; game-ending moves are scored exactly."""
-        moves = list(board.legal_moves)
+    # --- evaluation -----------------------------------------------------------
+
+    def _score_children(self, board, ply, moves=None, quiet=False):
+        """Score each move from board (default: every legal move) in one batch.
+        Returns (moves, white-perspective scores, game-over mask); game-ending moves
+        are scored exactly. quiet=True uses the cheaper quiescence terminal check."""
+        moves = list(board.legal_moves) if moves is None else moves
         scores = np.zeros(len(moves))
+        terminal = np.zeros(len(moves), dtype=bool)
+        check_terminal = quiet_terminal_score if quiet else terminal_score
         to_eval, idx, keys = [], [], []
         for i, move in enumerate(moves):
             board.push(move)
-            term = terminal_score(board, ply)
+            term = check_terminal(board, ply)
             if term is not None:
-                scores[i] = term
+                scores[i], terminal[i] = term, True
             else:
                 # Pieces, side to move, castling and legal en passant: everything the
                 # models see. Hashed to an int to keep the cache small.
@@ -360,22 +526,32 @@ class Bot:
             scores[idx] = values
             self.nodes += len(to_eval)
             self.cache.update(zip(keys, values.tolist()))
-            if len(self.cache) > self.cache_size:
-                for key in list(itertools.islice(self.cache, len(self.cache) // 4)):
-                    del self.cache[key]
-        return moves, scores
+            self._trim(self.cache)
+        return moves, scores, terminal
+
+    def _store(self, table, key, value):
+        table[key] = value
+        self._trim(table)
+
+    def _trim(self, table):
+        if len(table) > self.cache_size:
+            for key in list(itertools.islice(table, len(table) // 4)):
+                del table[key]
 
 
 _evaluator_cache: dict = {}
 
 def load_bot(name: str, depth: int = 1, weights: str | None = None, device=None,
-             temperature: float = 0.0, seed: int | None = None) -> Bot:
+             temperature: float = 0.0, seed: int | None = None, quiescence_depth: int = 6,
+             book: OpeningBook | None = None) -> Bot:
     """Load a bot by registry name (see BOTS). Models are cached, so two bots
     with the same weights at different depths share one copy on the GPU.
-    temperature > 0 samples moves instead of always playing the best (see Bot)."""
+    temperature > 0 samples moves instead of always playing the best (see Bot).
+    book: an OpeningBook to play from before searching (see Bot)."""
     if name not in BOTS:
         raise ValueError(f"Unknown bot '{name}'. Available: {', '.join(BOTS)}")
     key = (name, weights, device)
     if key not in _evaluator_cache:
         _evaluator_cache[key] = BOTS[name].make_evaluator(weights, device)
-    return Bot(name, _evaluator_cache[key], depth, temperature=temperature, seed=seed)
+    return Bot(name, _evaluator_cache[key], depth, temperature=temperature, seed=seed,
+               quiescence_depth=quiescence_depth, book=book)
