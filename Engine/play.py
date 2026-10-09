@@ -10,6 +10,8 @@ in centipawns makes them sample from a softmax over every legal move's score ins
     uv run python Engine/play.py --white t2:2:30 --black t2:2      # only white samples
     uv run python Engine/play.py --white v5:1 --black v2:3 --pgn games/v5_vs_v2.pgn
     uv run python Engine/play.py --white v2 --black v1 --depth 2 --fen "<fen>"
+    uv run python Engine/play.py --white t2:2 --black t2:2 --book --seed 3   # open from the gm2001 book
+    uv run python Engine/play.py --white human --black t2:2 --book my.bin --book-plies 20
 
 Or from Python:
 
@@ -23,7 +25,7 @@ import time
 import chess
 import chess.pgn
 
-from bots import BOTS, load_bot
+from bots import BOTS, DEFAULT_BOOK, OpeningBook, load_bot
 
 
 class HumanPlayer:
@@ -57,13 +59,15 @@ class HumanPlayer:
 
 
 def make_player(spec: str, default_depth: int = 1, weights: str | None = None,
-                default_temperature: float = 0.0, seed: int | None = None):
+                default_temperature: float = 0.0, seed: int | None = None, quiescence: int = 6,
+                book: OpeningBook | None = None):
     """'human' -> HumanPlayer, 'v2' / 'v2:3' / 'v2:3:50' -> Bot (name:depth:temperature)."""
     name, depth, temperature = (spec.split(":") + ["", ""])[:3]
     if name == "human":
         return HumanPlayer()
     return load_bot(name, depth=int(depth) if depth else default_depth, weights=weights,
-                    temperature=float(temperature) if temperature else default_temperature, seed=seed)
+                    temperature=float(temperature) if temperature else default_temperature, seed=seed,
+                    quiescence_depth=quiescence, book=book)
 
 
 def game_over(board: chess.Board) -> bool:
@@ -106,7 +110,9 @@ def play_game(white, black, fen: str | None = None, verbose: bool = True,
             board.push(move)
             if show_board:
                 info = ""
-                if hasattr(player, "nodes"):
+                if getattr(player, "last_book", False):
+                    info = "  (book)"
+                elif hasattr(player, "nodes"):
                     info = (f"  ({time.perf_counter() - start:.1f}s, {player.nodes} positions evaluated, "
                             f"{player.cache_hits} from cache)")
                 print(f"{label}  [{player}]{info}")
@@ -149,6 +155,13 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="sample moves from softmax(score / T), T in centipawns, for bots "
                              "without an explicit :TEMPERATURE (default 0 = always the best move)")
+    parser.add_argument("--quiescence", type=int, default=6,
+                        help="quiescence search plies past the depth limit (0 = off, default 6)")
+    parser.add_argument("--book", nargs="?", const=DEFAULT_BOOK,
+                        help="play opening moves from a Polyglot .bin book (default with no path: "
+                             "Models/Books/gm2001.bin)")
+    parser.add_argument("--book-plies", type=int, default=16,
+                        help="leave the book after this many plies at most (default 16)")
     parser.add_argument("--seed", type=int, help="random seed for sampled moves, for reproducible games")
     parser.add_argument("--white-weights", help="override checkpoint path for white's bot")
     parser.add_argument("--black-weights", help="override checkpoint path for black's bot")
@@ -160,9 +173,11 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="don't print the board in bot-only games")
     args = parser.parse_args()
 
-    white = make_player(args.white, args.depth, args.white_weights, args.temperature, args.seed)
+    book = OpeningBook(args.book, max_plies=args.book_plies) if args.book else None
+    white = make_player(args.white, args.depth, args.white_weights, args.temperature, args.seed,
+                        args.quiescence, book)
     black = make_player(args.black, args.depth, args.black_weights, args.temperature,
-                        None if args.seed is None else args.seed + 1)
+                        None if args.seed is None else args.seed + 1, args.quiescence, book)
     game = play_game(white, black, fen=args.fen, verbose=not args.quiet,
                      pgn_path=args.pgn, max_moves=args.max_moves)
 

@@ -5,7 +5,14 @@ Train the NoFeat transformer on data produced by NoFeat.prepare_data.
     uv run python -m NoFeat.train --out Models/Weights/SlackFishV-T2 --resume Models/Weights/SlackFishV-T2/last.pt --epochs 20
     uv run python -m NoFeat.train --out /tmp/smoke --data data/nofeat_small.npz --epochs 2   # smoke test
 
-Targets are clipped to +-CLIP centipawns and divided by SCALE before MSE.
+Targets (--target):
+  cp       centipawns clipped to +-CLIP and divided by SCALE, trained with MSE.
+  winprob  the model outputs a logit; the target is sigmoid(cp / WP_SCALE), the
+           win probability for White, trained with binary cross-entropy. Lopsided
+           positions saturate near 0/1 instead of dominating the loss, and forced
+           mates need no clipping. In play, logit * WP_SCALE is used as a
+           centipawn-like score.
+Either way the log reports MAE in centipawns (clipped to +-CLIP) so runs compare.
 Checkpoints (model, optimizer, config, losses) go to --out: last.pt after every
 epoch and every --save-every steps within one, best.pt when validation loss
 improves. --resume picks up at the exact step it stopped (each epoch's shuffle
@@ -50,8 +57,12 @@ def parse_args():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--warmup-steps", type=int, default=2000)
-    p.add_argument("--clip", type=float, default=1500, help="clip targets to +-CLIP cp")
-    p.add_argument("--scale", type=float, default=500, help="divide clipped targets by SCALE")
+    p.add_argument("--target", choices=["cp", "winprob"], default="cp",
+                   help="regress clipped centipawns (cp) or win probability (winprob)")
+    p.add_argument("--clip", type=float, default=1500, help="clip cp targets (and reported MAE) to +-CLIP")
+    p.add_argument("--scale", type=float, default=500, help="cp target: divide clipped targets by SCALE")
+    p.add_argument("--wp-scale", type=float, default=400,
+                   help="winprob target: win probability = sigmoid(cp / WP_SCALE)")
     p.add_argument("--arch", choices=list(MODELS), default="v1",
                    help="model class from NoFeat/model.py (v1 = ChessTransformerV1, v2 = ChessTransformerV2)")
     # Size options default to the chosen class's own defaults
@@ -74,9 +85,9 @@ def parse_args():
 
 @torch.no_grad()
 def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=False):
-    """Per-position prediction errors (scaled units) for idx, as a CPU tensor."""
+    """(predictions, targets) for idx in model units, as CPU tensors."""
     model.eval()
-    errors = []
+    preds, ys = [], []
     for i in range(0, len(idx), 1024):
         b = idx[i:i + 1024]
         sq, ca, tu = squares[b].to(device).long(), castling[b].to(device).long(), turn[b].to(device).long()
@@ -86,9 +97,29 @@ def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=
             y = -y
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             pred = model(sq, ca, tu).float()
-        errors.append((pred - y).cpu())
+        preds.append(pred.cpu())
+        ys.append(y.cpu())
     model.train()
-    return torch.cat(errors) if errors else torch.zeros(0)
+    return (torch.cat(preds), torch.cat(ys)) if preds else (torch.zeros(0), torch.zeros(0))
+
+
+def unit_cp(args):
+    """Centipawns per model output unit."""
+    return args.wp_scale if args.target == "winprob" else args.scale
+
+
+def val_metrics(pred, y, args):
+    """(loss-space MSE, per-position absolute error in centipawns clipped to +-clip).
+
+    The MSE is in the target's own space: scaled cp for --target cp, win probability
+    for --target winprob (so it is comparable only between runs with the same target).
+    """
+    if args.target == "winprob":
+        mse = (torch.sigmoid(pred) - torch.sigmoid(y)) ** 2
+    else:
+        mse = (pred - y) ** 2
+    to_cp = lambda t: (t * unit_cp(args)).clamp(-args.clip, args.clip)
+    return mse, (to_cp(pred) - to_cp(y)).abs()
 
 
 def main():
@@ -114,7 +145,10 @@ def main():
     if unknown:
         raise SystemExit(f"unknown --sources {sorted(unknown)}; {args.data} has {source_names}")
     use = torch.tensor([name in args.sources for name in source_names])
-    targets = torch.from_numpy(np.clip(data["eval"][keep], -args.clip, args.clip) / args.scale).float()
+    if args.target == "winprob":   # logit of the win probability; mates (+-32000 cp) saturate on their own
+        targets = torch.from_numpy(data["eval"][keep] / args.wp_scale).float()
+    else:
+        targets = torch.from_numpy(np.clip(data["eval"][keep], -args.clip, args.clip) / args.scale).float()
 
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed))
     n_val = max(1, int(n * args.val_frac))
@@ -169,8 +203,9 @@ def main():
             "scheduler_state_dict": scheduler.state_dict(),
             "model_class": type(model).__name__,
             "model_config": model.config,
+            "target": args.target,
             "target_clip": args.clip,
-            "target_scale": args.scale,
+            "target_scale": unit_cp(args),   # model output * target_scale = centipawn-like score
             "best_val": best_val,
             "history": history,
             "args": vars(args),
@@ -182,7 +217,10 @@ def main():
         os.replace(path + ".tmp", path)
         return path
 
-    criterion = nn.MSELoss()
+    if args.target == "winprob":   # soft-label BCE: target is a probability, prediction a logit
+        criterion = lambda pred, y: nn.functional.binary_cross_entropy_with_logits(pred, torch.sigmoid(y))
+    else:
+        criterion = nn.MSELoss()
     model.train()
     for epoch in range(start_epoch, args.epochs + 1):
         shuffle = torch.Generator().manual_seed(args.seed * 1000 + epoch)
@@ -225,12 +263,13 @@ def main():
             if args.save_every and (step + 1) % args.save_every == 0 and step + 1 < steps_per_epoch:
                 save(checkpoint(epoch, step + 1), "last.pt")
 
-        err = evaluate(model, squares, castling, turn, targets, val_idx, args, device)
-        mirror_err = evaluate(model, squares, castling, turn, targets, val_idx[val_used], args, device, mirror=True)
-        val_mse = (err[val_used] ** 2).mean().item()
-        val_mae_cp = err[val_used].abs().mean().item() * args.scale
-        mirror_mae_cp = mirror_err.abs().mean().item() * args.scale
-        by_source = {name: err[source[val_idx] == i].abs().mean().item() * args.scale
+        sq_err, cp_err = val_metrics(*evaluate(model, squares, castling, turn, targets, val_idx, args, device), args)
+        _, mirror_cp_err = val_metrics(*evaluate(model, squares, castling, turn, targets, val_idx[val_used],
+                                                 args, device, mirror=True), args)
+        val_mse = sq_err[val_used].mean().item()
+        val_mae_cp = cp_err[val_used].mean().item()
+        mirror_mae_cp = mirror_cp_err.mean().item()
+        by_source = {name: cp_err[source[val_idx] == i].mean().item()
                      for i, name in enumerate(source_names) if (source[val_idx] == i).any()}
         history.append({"epoch": epoch, "train_loss": running, "val_mse": val_mse, "val_mae_cp": val_mae_cp,
                         "val_mirror_mae_cp": mirror_mae_cp, "val_mae_cp_by_source": by_source})

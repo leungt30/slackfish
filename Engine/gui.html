@@ -11,13 +11,13 @@
   :root {
     --bg: #f4f1ec; --panel: #ffffff; --text: #26231f; --muted: #6f6a62;
     --border: #ddd6cb; --accent: #7a5c3a; --accent-text: #fff;
-    --bar-white: #f7f5f1; --bar-black: #3a3631;
+    --bar-white: #f7f5f1; --bar-black: #3a3631; --low: #c0392b;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #1d1b19; --panel: #282522; --text: #ece7df; --muted: #a39d93;
       --border: #3d3934; --accent: #c49a6c; --accent-text: #1d1b19;
-      --bar-white: #e9e5de; --bar-black: #45403a;
+      --bar-white: #e9e5de; --bar-black: #45403a; --low: #ff7b6b;
     }
   }
   * { box-sizing: border-box; }
@@ -46,6 +46,19 @@
   .row { display: flex; gap: 8px; }
   .row > * { flex: 1; }
   label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 3px; }
+  input[type=number] {
+    width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .clock {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);
+  }
+  .clock .who { font-size: 12px; color: var(--muted); }
+  .clock .time { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+  .clock.running { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .clock.low .time { color: var(--low); }
+  .clock.flagged .time { color: var(--low); }
   select, button {
     width: 100%; font: inherit; padding: 7px 9px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
@@ -53,6 +66,11 @@
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
   button:disabled { opacity: .5; cursor: default; }
+  fieldset.botcfg {
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px 10px; margin: 0;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  fieldset.botcfg legend { font-size: 12px; font-weight: 600; color: var(--muted); padding: 0 4px; }
   #status { font-weight: 600; min-height: 1.4em; }
   #evaltext { color: var(--muted); font-variant-numeric: tabular-nums; }
   #moves {
@@ -60,6 +78,7 @@
     padding: 6px 8px; font-variant-numeric: tabular-nums; background: var(--bg);
   }
   #moves .m { display: grid; grid-template-columns: 36px 1fr 1fr; padding: 1px 0; }
+  #moves .t { color: var(--muted); font-size: 11px; margin-left: 5px; }
   #moves .n { color: var(--muted); }
   #promo {
     position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
@@ -82,15 +101,76 @@
 
   <div class="panel">
     <h1>SlackFish</h1>
-    <div class="row">
-      <div><label for="bot">Bot</label><select id="bot"></select></div>
-      <div><label for="depth">Depth</label>
-        <select id="depth"><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+    <div>
+      <label for="mode">Mode</label>
+      <select id="mode">
+        <option value="white">Play as White</option>
+        <option value="black">Play as Black</option>
+        <option value="watch">Watch bot vs bot</option>
+      </select>
     </div>
+    <fieldset class="botcfg" id="cfgA"><legend id="legendA">Bot</legend>
+      <div class="row">
+        <div><label for="botA">Model</label><select id="botA" class="bot"></select></div>
+        <div><label for="depthA">Depth</label><select id="depthA" class="depth"></select></div>
+      </div>
+      <div class="row">
+        <div><label for="qA" title="Extra plies of captures (and check escapes) searched past the depth limit, so the bot doesn't stop in the middle of an exchange. Off = score positions where the search ends.">Quiescence (plies)</label>
+          <select id="qA" class="quiescence"></select></div>
+        <div><label for="tempA" title="0 always plays the best move. Higher values sample weaker moves more often: at 50, a move 50 centipawns worse is 0.37x as likely.">Temperature (cp)</label>
+          <input type="number" id="tempA" min="0" max="1000" step="10" value="0"></div>
+      </div>
+    </fieldset>
+    <fieldset class="botcfg" id="cfgB" hidden><legend>Black bot</legend>
+      <div class="row">
+        <div><label for="botB">Model</label><select id="botB" class="bot"></select></div>
+        <div><label for="depthB">Depth</label><select id="depthB" class="depth"></select></div>
+      </div>
+      <div class="row">
+        <div><label for="qB">Quiescence (plies)</label><select id="qB" class="quiescence"></select></div>
+        <div><label for="tempB">Temperature (cp)</label>
+          <input type="number" id="tempB" min="0" max="1000" step="10" value="0"></div>
+      </div>
+    </fieldset>
     <div class="row">
-      <div><label for="color">You play</label>
-        <select id="color"><option value="white">White</option><option value="black">Black</option></select></div>
-      <div><label>&nbsp;</label><button class="primary" id="new">New game</button></div>
+      <div><label for="book" title="Bots play moves from this Polyglot book, sampled by how often each was played, until the game leaves the book. Then they search as usual.">Opening book</label>
+        <select id="book"></select></div>
+    </div>
+    <div class="row" id="tcrow">
+      <div><label for="tc">Your clock</label>
+        <select id="tc">
+          <option value="none">No clock</option>
+          <option value="1+0">1 + 0 (bullet)</option>
+          <option value="2+1">2 + 1 (bullet)</option>
+          <option value="3+0">3 + 0 (blitz)</option>
+          <option value="3+2">3 + 2 (blitz)</option>
+          <option value="5+0">5 + 0 (blitz)</option>
+          <option value="5+3">5 + 3 (blitz)</option>
+          <option value="10+0">10 + 0 (rapid)</option>
+          <option value="10+5">10 + 5 (rapid)</option>
+          <option value="15+10">15 + 10 (rapid)</option>
+          <option value="30+0">30 + 0 (classical)</option>
+          <option value="custom">Custom…</option>
+        </select></div>
+    </div>
+    <div class="row" id="tccustom" hidden>
+      <div><label for="tcmin">Minutes</label><input type="number" id="tcmin" min="0.25" max="180" step="0.25" value="5"></div>
+      <div><label for="tcinc">Increment (s)</label><input type="number" id="tcinc" min="0" max="300" step="1" value="0"></div>
+    </div>
+    <div class="row" id="delayrow" hidden>
+      <div><label for="delay">Time per move (at least)</label>
+        <select id="delay">
+          <option value="0">As fast as possible</option>
+          <option value="0.5">0.5 s</option>
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="3">3 s</option>
+        </select></div>
+    </div>
+    <button class="primary" id="new">New game</button>
+    <div class="clock" id="clock" hidden>
+      <span class="who" id="clockwho">Your clock</span>
+      <span class="time" id="clocktime">5:00</span>
     </div>
     <div>
       <div id="status"></div>
@@ -99,6 +179,7 @@
     <div id="moves"></div>
     <div class="row">
       <button id="undo">Undo</button>
+      <button id="pause" hidden>Pause</button>
       <button id="flip">Flip</button>
       <button id="pgn">PGN</button>
     </div>
@@ -117,6 +198,34 @@ import { Chessground } from "https://cdn.jsdelivr.net/npm/chessground@9.2.1/+esm
 const $ = (id) => document.getElementById(id);
 let state = null, busy = false, orientation = "white";
 
+for (const sel of document.querySelectorAll("select.depth"))
+  sel.innerHTML = [1, 2, 3, 4, 5].map((d) => `<option>${d}</option>`).join("");
+for (const sel of document.querySelectorAll("select.quiescence"))
+  sel.innerHTML = [[0, "Off"], [2, "2"], [4, "4"], [6, "6 (default)"], [8, "8"], [12, "12"]]
+    .map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+for (const sel of document.querySelectorAll("select.quiescence")) sel.value = "6";
+
+// Bot settings: "A" is the single bot (play modes) or White's bot (watch), "B" is Black's bot
+function readBot(k) {
+  return { name: $("bot" + k).value, depth: $("depth" + k).value,
+           quiescence: $("q" + k).value, temperature: $("temp" + k).value || 0 };
+}
+function writeBot(k, spec) {
+  if (!spec) return;
+  $("bot" + k).value = spec.name; $("depth" + k).value = String(spec.depth);
+  $("q" + k).value = String(spec.quiescence); $("temp" + k).value = spec.temperature;
+}
+function updateModeUI() {
+  const watch = $("mode").value === "watch";
+  $("legendA").textContent = watch ? "White bot" : "Bot";
+  $("cfgB").hidden = !watch;
+  $("tcrow").hidden = watch;
+  $("tccustom").hidden = watch || $("tc").value !== "custom";
+  $("delayrow").hidden = !watch;
+}
+$("mode").onchange = updateModeUI;
+const label = (spec, color) => `${spec.name} (${color})`;
+
 const cg = Chessground($("board"), {
   coordinates: true,
   animation: { duration: 200 },
@@ -134,8 +243,9 @@ async function api(path, body) {
   return data;
 }
 
-function render(s, thinking = false) {
+function render(s) {
   state = s;
+  const thinking = s.thinking;
   const humanTurn = !s.gameOver && s.turn === s.humanColor && !thinking;
   cg.set({
     fen: s.fen,
@@ -146,28 +256,42 @@ function render(s, thinking = false) {
     movable: { color: humanTurn ? s.humanColor : undefined, dests: new Map(Object.entries(s.dests)) },
   });
 
-  $("undo").disabled = thinking || s.history.length === 0;
+  const watching = s.humanColor === null;
+  $("undo").hidden = watching;
+  $("undo").disabled = thinking || s.history.length === 0 || s.flagged;
+  $("pause").hidden = !watching;
+  $("pause").disabled = s.gameOver;
+  $("pause").textContent = s.paused ? "Resume" : "Pause";
+  renderClock();
   $("export").hidden = !s.gameOver;
 
   // Status
   let status;
+  const botSpec = s.white || s.black;   // play modes: the one bot
   if (s.gameOver) {
-    const youWon = (s.result === "1-0") === (s.humanColor === "white");
-    status = s.result === "1/2-1/2" ? `Draw (${s.reason})` : `${youWon ? "You win" : `${s.bot} wins`} by ${s.reason}`;
+    const winner = s.result === "1-0" ? "white" : "black";
+    if (s.result === "1/2-1/2") status = `Draw (${s.reason})`;
+    else if (watching) status = `${label(s[winner], winner === "white" ? "White" : "Black")} wins by ${s.reason}`;
+    else status = `${winner === s.humanColor ? "You win" : `${botSpec.name} wins`} by ${s.reason}`;
   } else if (thinking) {
-    status = `<span class="spin"></span>${s.bot} is thinking…`;
+    status = `<span class="spin"></span>${watching ? label(s[s.turn], s.turn === "white" ? "White" : "Black") : s.thinkingBot} is thinking…`;
+  } else if (watching && s.paused) {
+    status = "Paused";
   } else {
     status = s.turn === s.humanColor ? "Your move" + (s.check ? " (check)" : "") : "";
   }
   $("status").innerHTML = status;
 
   // Eval (White's perspective, centipawns)
-  if (s.eval === null) {
+  if (s.evalBook) {
+    $("evaltext").textContent = `${s.evalBy}: book move`;
+    if (s.eval === null) $("evalwhite").style.height = "50%";
+  } else if (s.eval === null) {
     $("evaltext").textContent = "";
     $("evalwhite").style.height = "50%";
   } else {
     const mate = Math.abs(s.eval) > 90000;
-    $("evaltext").textContent = `${s.bot} eval: ` + (mate
+    $("evaltext").textContent = `${s.evalBy} eval: ` + (mate
       ? (s.eval > 0 ? "White mates" : "Black mates")
       : `${s.eval >= 0 ? "+" : ""}${(s.eval / 100).toFixed(2)}`);
     const pct = 100 / (1 + Math.exp(-s.eval / 400));
@@ -176,26 +300,85 @@ function render(s, thinking = false) {
   $("evalbar").classList.toggle("flipped", orientation === "black");
 
   // Move list
+  // Each move shows the time spent on it: thinking time for bots, turn time for the human
+  const fmtTime = (t) => t === null || t === undefined ? ""
+    : t < 10 ? `${t.toFixed(1)}s` : t < 60 ? `${Math.round(t)}s` : `${Math.floor(t / 60)}:${String(Math.round(t % 60)).padStart(2, "0")}`;
+  const cell = (i) => i < s.history.length
+    ? `<span>${s.history[i]}<span class="t">${fmtTime(s.times && s.times[i])}</span></span>` : "<span></span>";
   let html = "";
   for (let i = 0; i < s.history.length; i += 2) {
-    html += `<div class="m"><span class="n">${i / 2 + 1}.</span><span>${s.history[i]}</span><span>${s.history[i + 1] || ""}</span></div>`;
+    html += `<div class="m"><span class="n">${i / 2 + 1}.</span>${cell(i)}${cell(i + 1)}</div>`;
   }
   $("moves").innerHTML = html;
   $("moves").scrollTop = $("moves").scrollHeight;
 }
 
 function syncControls(s) {
-  $("bot").innerHTML = s.bots.map((b) => `<option>${b}</option>`).join("");
-  $("bot").value = s.bot; $("depth").value = String(s.depth); $("color").value = s.humanColor;
+  for (const sel of document.querySelectorAll("select.bot"))
+    sel.innerHTML = s.bots.map((b) => `<option>${b}</option>`).join("");
+  $("mode").value = s.humanColor || "watch";
+  if (s.humanColor === null) { writeBot("A", s.white); writeBot("B", s.black); }
+  else { writeBot("A", s.white || s.black); writeBot("B", s.white || s.black); }
+  if (s.humanColor === null) $("delay").value = String(s.delay);
+  $("book").innerHTML = `<option value="">Off</option>` + (s.books || []).map((b) => `<option>${b}</option>`).join("");
+  $("book").value = s.book || "";
+  // Show the current game's time control in the settings
+  const c = s.clock;
+  const tc = c ? `${+(c.base / 60).toFixed(2)}+${+c.increment.toFixed(2)}` : "none";
+  const preset = [...$("tc").options].some((o) => o.value === tc);
+  $("tc").value = preset ? tc : "custom";
+  if (!preset && c) { $("tcmin").value = +(c.base / 60).toFixed(2); $("tcinc").value = c.increment; }
+  updateModeUI();
 }
 
-async function botTurn() {
-  if (!state || state.gameOver || state.turn === state.humanColor) return;
-  busy = true;
-  render(state, true);
-  try { render(await api("/api/bot", {})); }
-  catch (e) { $("status").textContent = "Error: " + e.message; }
-  finally { busy = false; }
+// --- Clock: the server owns the time; this just counts down between updates ---
+let clockLeft = null, clockRunning = false, clockAt = 0;
+function syncClock(s) {
+  clockLeft = s.clock ? s.clock.left : null;
+  clockRunning = !!(s.clock && s.clock.running);
+  clockAt = performance.now();
+}
+function formatClock(t) {
+  if (t < 10) return t.toFixed(1);
+  const total = Math.ceil(t), h = Math.floor(total / 3600), m = Math.floor(total / 60) % 60, sec = total % 60;
+  const ss = String(sec).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+function renderClock() {
+  const el = $("clock");
+  el.hidden = clockLeft === null;
+  if (clockLeft === null) return;
+  const t = Math.max(0, clockLeft - (clockRunning ? (performance.now() - clockAt) / 1000 : 0));
+  $("clocktime").textContent = formatClock(t);
+  const c = state && state.clock;
+  const waiting = c && !clockRunning && !state.gameOver && state.turn === state.humanColor && !state.thinking;
+  $("clockwho").textContent = (waiting ? "Starts after your first move" : "Your clock")
+    + (c && c.increment && !waiting ? ` · +${+c.increment.toFixed(2)}s per move` : "");
+  el.classList.toggle("running", clockRunning);
+  el.classList.toggle("low", t < 10 && t > 0);
+  el.classList.toggle("flagged", !!(state && state.flagged));
+}
+setInterval(() => { if (clockRunning) renderClock(); }, 100);
+$("tc").onchange = updateModeUI;
+function clockSetting() {
+  const v = $("tc").value;
+  return v === "custom" ? `${$("tcmin").value}+${$("tcinc").value || 0}` : v;
+}
+
+// Apply a state from the server (POST response or the live event stream).
+// The server runs the bot itself, so every viewer just renders what it sends.
+let pending = null;
+function update(s) {
+  if (state && s.version < state.version) return;            // older than what we're showing
+  if ($("promo").style.display === "flex") { pending = s; return; }   // don't yank the board mid-promotion
+  pending = null;
+  const first = state === null;
+  if (first || s.humanColor !== state.humanColor) orientation = s.humanColor || "white";
+  const settings = (x) => JSON.stringify([x.white, x.black, x.humanColor, x.delay, x.book,
+                                          x.clock && x.clock.base, x.clock && x.clock.increment]);
+  if (first || settings(s) !== settings(state)) syncControls(s);
+  syncClock(s);
+  render(s);
 }
 
 // Resolves to "q" / "r" / "b" / "n", or null if dismissed (click outside or Escape)
@@ -229,32 +412,35 @@ async function onUserMove(orig, dest) {
   const piece = cg.state.pieces.get(dest);
   if (piece && piece.role === "pawn" && (dest[1] === "8" || dest[1] === "1")) {
     const letter = await askPromotion(piece.color);
-    if (!letter) { render(state); return; }   // cancelled: put the pawn back
+    if (!letter) { update(pending || state); return; }   // cancelled: put the pawn back
     uci += letter;
   }
-  try { render(await api("/api/move", { uci })); }
-  catch (e) { render(await api("/api/state")); return; }
-  botTurn();
+  try { update(await api("/api/move", { uci })); }
+  catch (e) { update(await api("/api/state")); }   // rejected: show the real position
 }
 
 $("new").onclick = async () => {
   if (busy) return;
-  const color = $("color").value;
-  orientation = color;
-  $("status").innerHTML = `<span class="spin"></span>Loading ${$("bot").value}…`;
+  busy = true;
+  const mode = $("mode").value;
+  orientation = mode === "watch" ? "white" : mode;
+  const book = $("book").value || null;
+  const body = mode === "watch" ? { white: readBot("A"), black: readBot("B"), delay: $("delay").value }
+             : mode === "white" ? { white: null, black: readBot("A"), clock: clockSetting() }
+             : { white: readBot("A"), black: null, clock: clockSetting() };
+  $("status").innerHTML = `<span class="spin"></span>Loading…`;
   try {
-    const s = await api("/api/new", { bot: $("bot").value, depth: $("depth").value, color });
-    syncControls(s);
-    render(s);
-    botTurn();
+    update(await api("/api/new", { ...body, book }));
   } catch (e) { $("status").textContent = "Error: " + e.message; }
+  finally { busy = false; }
 };
 $("undo").onclick = async () => {
-  if (busy) return;
-  render(await api("/api/undo", {}));
-  botTurn();   // if we undid back to the start as Black, the bot moves again
+  try { update(await api("/api/undo", {})); } catch (e) { update(await api("/api/state")); }
 };
-$("flip").onclick = () => { orientation = orientation === "white" ? "black" : "white"; render(state, busy); };
+$("pause").onclick = async () => {
+  try { update(await api("/api/pause", { paused: !state.paused })); } catch (e) { update(await api("/api/state")); }
+};
+$("flip").onclick = () => { orientation = orientation === "white" ? "black" : "white"; render(state); };
 async function download(path, filename, button) {
   const label = button.textContent;
   button.disabled = true;
@@ -277,11 +463,13 @@ $("pgn").onclick = () => download("/api/pgn", "slackfish.pgn", $("pgn"));
 $("gif").onclick = () => download("/api/export.gif", "slackfish.gif", $("gif"));
 $("png").onclick = () => download("/api/export.png", "slackfish.png", $("png"));
 
-const initial = await api("/api/state");
-orientation = initial.humanColor;
-syncControls(initial);
-render(initial);
-botTurn();
+update(await api("/api/state"));
+
+// Live updates: the server pushes the new state whenever anyone (in any tab or
+// through a tunnel like ngrok) moves, undoes, starts a game, or the bot replies.
+// EventSource reconnects by itself if the connection drops.
+const events = new EventSource("/api/events");
+events.onmessage = (e) => update(JSON.parse(e.data));
 </script>
 </body>
 </html>

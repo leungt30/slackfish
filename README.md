@@ -57,11 +57,22 @@ Notes:
 ```bash
 uv run python Engine/gui.py                              # opens http://localhost:8000
 uv run python Engine/gui.py --bot t1-alpha:3 --color black
+uv run python Engine/gui.py --temperature 50              # sample moves instead of always the best (centipawns)
+uv run python Engine/gui.py --book                       # bots open from the gm2001 book (also a menu in the page)
 uv run python Engine/gui.py --device cpu                 # keep the GPU free, e.g. while training
 uv run python Engine/gui.py --fen "<fen>" --port 8080 --no-browser
 ```
 
 The board is [Chessground](https://github.com/lichess-org/chessground), lichess's board UI, loaded from jsDelivr (needs internet; GPL-3.0). You can drag or click pieces, and it shows legal-move dots, last move and check highlights, and a promotion picker. The side panel picks the bot (only bots whose weights exist are listed), the depth and your colour, and has an evaluation bar from the bot's last search, a move list, Undo, Flip and PGN download. When the game ends, **Save GIF** (animated replay of every move) and **Save PNG** (final position with the result) appear. Python runs the rules (python-chess) and the bot; `Engine/gui.html` only displays the state.
+
+**Sharing a game (e.g. with ngrok).** There is one shared game per server. Every open page sees the same board and updates live: the server pushes changes over Server-Sent Events (`/api/events`), so there's no polling and a viewer costs one long-lived connection. The bot runs on the server, so everyone sees "thinking…" and its reply. To let others watch or play remotely:
+
+```bash
+uv run python Engine/gui.py --port 8000 --no-browser
+ngrok http 8000          # share the https://….ngrok-free.app URL
+```
+
+Anyone with the link can move, undo or start a new game; there are no accounts or spectator-only mode.
 
 ### In the terminal
 
@@ -87,6 +98,8 @@ uv run python Engine/play.py --white v5 --black v2 --white-weights path/to/Slack
 | `--depth` | `1` | Search depth for bots without an explicit `:DEPTH` |
 | `--white-weights`, `--black-weights` | registry path | Override a bot's checkpoint file |
 | `--fen` | start position | Start from a FEN |
+| `--book [PATH]` | off | Play opening moves from a Polyglot `.bin` book (no path: `Models/Books/gm2001.bin`) |
+| `--book-plies` | `16` | Leave the book after at most this many plies |
 | `--pgn` | `game.pgn` | Where to save the game |
 | `--max-moves` | none | Stop after N full moves |
 | `--quiet` | off | Don't print the board in bot-only games |
@@ -94,6 +107,16 @@ uv run python Engine/play.py --white v5 --black v2 --white-weights path/to/Slack
 | `--png PATH` | none | Save a PNG of the final position |
 
 **Human input:** moves in SAN (`e4`, `Nf3`, `exd5`, `e8=Q`) or UCI (`e2e4`, `e7e8q`). You can also type `moves` to list legal moves, `undo` to take back your last move and the bot's reply, or `quit` to stop and save the game.
+
+### Opening book
+
+With `--book`, bots play from a Polyglot opening book until the position leaves it, or until `--book-plies` plies have been played, and then they search as usual. Book moves are picked at random, weighted by how often each was played. Moves with under 2% of a position's weight are skipped. `--seed` makes the choice reproducible, so different seeds give different openings even at temperature 0.
+
+`Models/Books/gm2001.bin` (built from GM games, from [gmcheems-org/free-opening-books](https://github.com/gmcheems-org/free-opening-books)) is included. Any other Polyglot book works: pass its path to `play.py`, or drop it into `Models/Books/` and it appears in the GUI's *Opening book* menu.
+
+```bash
+uv run python Engine/play.py --white t2-w-6.41m:2 --black t1-3.25m:2 --book --seed 7
+```
 
 ### Search depth
 
@@ -208,7 +231,8 @@ Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-
 ├── Models/
 │   ├── Scalers/             # scaler_X.pkl, scaler_Y.pkl (v1/v2), scaler_Y_9M.pkl (v5)
 │   ├── Training/            # Model definitions and training scripts
-│   └── Weights/             # Model checkpoints (V1, V2 only)
+│   ├── Weights/             # Model checkpoints (V1, V2 only)
+│   └── Books/               # Polyglot opening books (gm2001.bin)
 ├── data/                    # Raw CSVs, not committed (gitignored)
 ├── featureEng.py            # FEN-to-feature engineering
 ├── preprocess.py            # CSV -> preprocessed .npz
