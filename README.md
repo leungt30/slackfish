@@ -28,6 +28,8 @@ uv run python Engine/play.py --white human --black v2:2
 | **t1-3.25m** | `NoFeat/model.py` | `Models/Weights/SlackFishV-T1-3.25M/best.pt` | Yes: SlackFishV-T1, 3.25M params, all 14M positions, 10 epochs, val MAE 143 cp |
 | **t1-alpha** | `NoFeat/model.py` | `Models/Weights/SlackFishV-T1-alpha/best.pt` | Yes: 2M random positions, 3 epochs, val MAE 194 cp; 5.5/6 vs v2 |
 | **t2-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-6.41M/best.pt` | Yes: SlackFishV-T2, 6.41M params, games + random, colour-swap augmentation, 6 epochs, val MAE 155 cp (mirrored 155) |
+| **t2-w-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-6.41M/best.pt` | Yes: T2 with a win-probability target, games + random, 8 epochs, val MAE games 128 / random 167 / tactics 630 cp |
+| **t2-w-all-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-All-6.41M/best.pt` | Yes: as t2-w, plus tactics, 8 epochs, val MAE games 142 / random 171 / tactics 356 cp |
 
 V5 is the latest model described in `REPORT.md`. Its original checkpoint is lost, so it has to be retrained (see [Retraining V5](#retraining-v5)). Once a checkpoint exists at `Models/Weights/SlackFishCNN_V5_79`, or is passed with `--white-weights` / `--black-weights`, it plays with no code changes.
 
@@ -60,10 +62,13 @@ uv run python Engine/gui.py --bot t1-alpha:3 --color black
 uv run python Engine/gui.py --temperature 50              # sample moves instead of always the best (centipawns)
 uv run python Engine/gui.py --book                       # bots open from the gm2001 book (also a menu in the page)
 uv run python Engine/gui.py --device cpu                 # keep the GPU free, e.g. while training
+uv run python Engine/gui.py --no-ponder                # don't let the bot think on your time
 uv run python Engine/gui.py --fen "<fen>" --port 8080 --no-browser
 ```
 
 The board is [Chessground](https://github.com/lichess-org/chessground), lichess's board UI, loaded from jsDelivr (needs internet; GPL-3.0). You can drag or click pieces, and it shows legal-move dots, last move and check highlights, and a promotion picker. The side panel picks the bot (only bots whose weights exist are listed), the depth and your colour, and has an evaluation bar from the bot's last search, a move list, Undo, Flip and PGN download. When the game ends, **Save GIF** (animated replay of every move) and **Save PNG** (final position with the result) appear. Python runs the rules (python-chess) and the bot; `Engine/gui.html` only displays the state.
+
+While it's your turn the bot ponders: it searches your likely replies in the background, best-looking first. If you play one it has finished, it replies instantly; otherwise it searches as usual, starting from the positions it already scored. Pondering never changes which move the bot picks, only how fast.
 
 **Sharing a game (e.g. with ngrok).** There is one shared game per server. Every open page sees the same board and updates live: the server pushes changes over Server-Sent Events (`/api/events`), so there's no polling and a viewer costs one long-lived connection. The bot runs on the server, so everyone sees "thinking…" and its reply. To let others watch or play remotely:
 
