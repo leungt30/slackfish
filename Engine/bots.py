@@ -139,6 +139,7 @@ BOTS = {
     "t1-alpha": NoFeatSpec("Models/Weights/SlackFishV-T1-alpha/best.pt"),
     "t2-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-6.41M/best.pt"),   # ChessTransformerV2
     "t2-w-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-6.41M/best.pt"),   # V2, win-probability target
+    "t2-w-all-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-All-6.41M/best.pt"),   # V2, win probability, games + random + tactics
 }
 
 

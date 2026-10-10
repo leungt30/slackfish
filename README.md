@@ -207,7 +207,83 @@ Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-
 
 **Performance on an RTX 500 Ada laptop GPU (4 GB):** about 3,700 positions/s with `torch.compile`, so one epoch over all 14M positions takes about 62 minutes. Peak GPU memory is about 3 GB at batch size 1024. In play it's much faster than v1/v2, because there's no feature engineering: depth 2 takes about 0.2s per move.
 
-**Smoke test results** (100k positions, 3 epochs): validation MAE fell from 331 to 286 cp. This only shows the pipeline works; no full training run has been done yet.
+**Smoke test results** (100k positions, 3 epochs): validation MAE fell from 331 to 286 cp. This only shows the pipeline works; see [Experiments](#experiments) for the full runs.
+
+## Experiments
+
+Everything below ran on one RTX 500 Ada laptop GPU (4 GB). Two kinds of measurement:
+
+- **Validation MAE:** mean absolute error against Stockfish on held-out positions, in centipawns clipped to ±1500, so it compares across targets.
+- **Matches:** 8 openings (Italian, Sicilian, QGD, King's Indian, French, Caro-Kann, English, Réti), each played once with each colour, so 16 games per pairing. Bots are deterministic, so a fixed opening set is the only source of variety. Games still going at move 150 count as draws. Elo differences are rough: with 16 games, the 95% interval on a score is about ±23 percentage points.
+
+### Training runs
+
+All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine decay.
+
+| Model | Architecture | Training data | Target | Colour-swap | Epochs | Time / epoch | Val MAE |
+|---|---|---|---|---|---|---|---|
+| T1-alpha | V1, 3.25M params | 2M-position random sample | cp (MSE) | no | 3 | ~9 min | 194 cp |
+| T1-3.25M | V1, 3.25M | games + random (13.7M) | cp (MSE) | no | 10 | ~62 min | 143 cp (182 mirrored) |
+| T2-6.41M | V2, 6.41M | games + random | cp (MSE) | 50% | 6 | ~2.6 h | 155 cp |
+| **T2-W-6.41M** | V2, 6.41M | games + random | win probability (BCE) | 50% | 8 | ~2.6 h | **131 cp** |
+| T2-W-All-6.41M | V2, 6.41M | games + random + tactics (16.3M) | win probability (BCE) | 50% | 8 | faster GPU, fp16 | 178 cp (all three sources) |
+
+Val MAE by epoch:
+
+| Epoch | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 10 |
+|---|---|---|---|---|---|---|---|---|---|
+| T1-3.25M (cp) | 189 | 179 | 169 | 161 | 155 | 151 | 149 | 144 | 143 |
+| T2-6.41M (cp) | 188 | 177 | 167 | 162 | 157 | 155 | | | |
+| T2-W-6.41M (win prob.) | 184 | 169 | 155 | 147 | 142 | 135 | 133 | 131 | |
+
+T2-W-All validates on all three sources, including tactics positions, so compare it with the others using the per-source MAE in its log, not the overall number. The validation positions are identical across runs (same data file and seed), so these compare directly:
+
+| Val MAE by source | T2-W-6.41M (games + random) | T2-W-All-6.41M (+ tactics) |
+|---|---|---|
+| games | **128 cp** | 142 cp |
+| random | **167 cp** | 171 cp |
+| tactics | 630 cp | **356 cp** |
+
+Adding the tactics data roughly halved the error on tactical positions, at a cost of 14 cp on positions from real games. T2-W-All was trained on a different machine in float16 rather than bfloat16, so data is not the only difference. Its error was still falling at epoch 8.
+
+**Win-probability target** (`--target winprob`): the label is `sigmoid(cp / 400)` and the model outputs a logit, trained with binary cross-entropy. In play, `logit × 400` is used as a centipawn-like score, so search, sampling and the eval bar work unchanged. Errors in balanced positions (0 vs +200 cp is 50% vs 62%) cost far more than errors in won ones (+1000 vs +1500 is 92% vs 98%), and forced mates need no clipping.
+
+### Match results
+
+| Match (depth 2, 16 games each) | Score | W / D / L | Rough Elo |
+|---|---|---|---|
+| T2-W-6.41M vs T2-6.41M | 10.5 / 16 | 9 / 1 / 4 (+2 unfinished) | +110 |
+| T2-W-6.41M vs T1-3.25M | 11 / 16 | 10 / 1 / 4 (+1 unfinished) | +135 |
+
+Earlier, smaller checks of 2–4 games: T1-3.25M drew T1-alpha 1–1. T2-6.41M beat T1-3.25M 2–0, despite its higher validation error.
+
+### Search and inference
+
+Same T2-W network on both sides unless noted. "Evals" means positions scored by the network.
+
+| Experiment | Result |
+|---|---|
+| **Profiling** (one depth-3 search) | About 2/3 of search time is the network on the GPU. It costs ~0.4 ms per position whether batches are 30 or 900 positions, so the GPU is compute-bound, not latency-bound. |
+| **float16 inference** (autocast) | 2.6× faster per batch (12.1 → 4.7 ms for 30 positions). Scores within 0.8 cp of float32 on average (5.9 cp max). bfloat16 was similar in speed but less accurate (3.2 cp mean). Whole searches got 2.5–2.8× faster. |
+| **Evaluation cache** (position → score, per bot) | Within one search, transpositions save 19% of evals at depth 3. Root scores unchanged (≤ 0.0003 cp). |
+| **Reusing caches across turns** | About 1% fewer evals (20 plies at depth 3: 102,208 vs 103,078) and no time saved. The new search's deepest plies are always new: the previous search only reached 1 ply below the new root. |
+| **Sampling with temperature** | Exact scores for every root move cost 3.7× a normal depth-3 search. Pruning moves more than 4 × T worse than the best cut that to 32k evals instead of 103k. The move distribution barely changes: total variation ≤ 0.09, 0.01 on average. |
+| **Transposition table + iterative deepening + network-score move ordering** | Alone, 7% fewer evals at depth 3 with identical results. The old search already pruned reasonably well. |
+| **Quiescence search** (captures and check escapes, up to 6 plies) | Cost per move: depth 2 0.26 → 0.41 s, depth 3 0.76 → 1.31 s. Standing pat ends most capture lines at once. |
+| New search vs old, equal depth (d2 vs d2) | 9.5 / 16 (6 / 7 / 3), about +65 Elo, at 1.5× the time per move |
+| New search vs old one ply deeper (d2 vs d3) | 5 / 16 (2 / 6 / 8). One more full ply still wins, but the old search used 4× the time per move. |
+| **New search vs old, equal time (d3 vs d3, 1.30 vs 1.27 s per move)** | **11 / 16 (8 / 6 / 2), about +135 Elo** |
+
+### What we learned
+
+1. **Better training targets and better search each helped more than a bigger model.** Switching to the win-probability target (+~120 Elo) and quiescence with move ordering (+~135 Elo at equal time) each cost nothing in model size.
+2. **Doubling the model did almost nothing on this data.** T1 (3.25M) and T2 (6.41M) had the same validation error at every epoch. With ~14M positions for 6.4M parameters, data is the limit: T1's gap between training and validation loss grew from 0.006 to 0.027 by epoch 10. Scaling the model only makes sense alongside more data.
+3. **Lower validation error doesn't guarantee stronger play.** T2 (155 cp) beat T1 (143 cp) in games. Match results decide, not MAE alone.
+4. **Colour-swap augmentation fixes colour bias.** Without it, T1-3.25M scored 136 cp as-is but 182 cp on mirrored positions. With it, the two numbers agree within ~1 cp.
+5. **Batching matters more than caching.** Evaluating all of a node's children in one forward pass is the main speed trick. Caches and the transposition table add only modest savings on top of it.
+6. **Small samples mislead.** Single games between deterministic bots are repeats of each other, and even 16-game matches leave about ±150 Elo of uncertainty. Use varied openings, or the opening book, and as many games as time allows.
+
+Ideas not yet tried: more data (the Lichess evaluation database has hundreds of millions of scored positions), a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, pondering on the opponent's time, and a larger model once the data grows.
 
 ## Repository Layout
 
