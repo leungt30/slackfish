@@ -9,6 +9,7 @@ Add a new model by writing an encode function and adding an entry to BOTS.
 """
 import itertools
 import os, sys
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -139,6 +140,7 @@ BOTS = {
     "t1-alpha": NoFeatSpec("Models/Weights/SlackFishV-T1-alpha/best.pt"),
     "t2-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-6.41M/best.pt"),   # ChessTransformerV2
     "t2-w-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-6.41M/best.pt"),   # V2, win-probability target
+    "t2-w-all-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-All-6.41M/best.pt"),   # V2, win-prob, + tactics
 }
 
 
@@ -246,16 +248,55 @@ class OpeningBook:
     def __str__(self):
         return os.path.basename(self.path)
 
-    def pick(self, board: chess.Board, rng: np.random.Generator) -> chess.Move | None:
+    def _entries(self, board: chess.Board):
         if board.ply() >= self.max_plies:
-            return None
+            return []
         entries = list(self.reader.find_all(board))
         total = sum(e.weight for e in entries)
-        entries = [e for e in entries if e.weight >= self.min_share * total and e.weight > 0]
+        return [e for e in entries if e.weight >= self.min_share * total and e.weight > 0]
+
+    def covers(self, board: chess.Board) -> bool:
+        """Whether pick() would return a book move here."""
+        return bool(self._entries(board))
+
+    def pick(self, board: chess.Board, rng: np.random.Generator) -> chess.Move | None:
+        entries = self._entries(board)
         if not entries:
             return None
         weights = np.array([e.weight for e in entries], dtype=float)
         return entries[rng.choice(len(entries), p=weights / weights.sum())].move
+
+
+class SearchAborted(Exception):
+    """Raised inside a search that was told to stop (see Bot.search and Ponder)."""
+
+
+class Ponder:
+    """The bot thinking on its opponent's time, on a background thread (see Bot.ponder).
+
+    finish(board) stops it once the opponent has moved: a ponder search already
+    running on board (the move it predicted) is left to complete, any other is
+    aborted. Afterwards the bot's search(board) uses the pondered result if there
+    is one, and its caches are warm either way. The bot must not search on
+    another thread until finish() returns."""
+
+    def __init__(self, bot, board: chess.Board):
+        self.bot = bot
+        self.stop = threading.Event()
+        self.keep = None      # position whose search may finish after stop
+        self.current = None   # position being searched now
+        self.thread = threading.Thread(target=bot._ponder, args=(board.copy(), self), daemon=True)
+        self.thread.start()
+
+    def aborted(self):
+        return self.stop.is_set() and self.current != self.keep
+
+    def finish(self, board: chess.Board | None = None):
+        """Stop pondering and wait for the thread. board: the position the bot now
+        has to move in, or None to abort whatever is running."""
+        self.keep = None if board is None else hash(board._transposition_key())
+        self.stop.set()
+        self.thread.join()
 
 
 class Bot:
@@ -291,6 +332,12 @@ class Bot:
     book: an OpeningBook. While the position is in it, the bot plays a book move
     (sampled by the book's weights, from the same seeded rng) instead of
     searching, and search() returns None as the score.
+
+    Pondering: ponder(board), with the opponent to move in board, searches the
+    opponent's replies on a background thread, likeliest first, until stopped.
+    Each finished reply's root scores are kept, so if the opponent plays one of
+    them, search() answers without searching again. Pondering never touches the
+    rng, so it doesn't change which moves get sampled.
     """
 
     def __init__(self, name: str, evaluator: Evaluator, depth: int = 1,
@@ -312,6 +359,9 @@ class Bot:
         self.tt: dict[int, tuple] = {}      # position -> (depth, score, bound, best move)
         self.nodes = 0        # positions scored by the model in the last search
         self.cache_hits = 0   # positions answered from the cache in the last search
+        self.pondered: dict[tuple, tuple] = {}   # (position, margin) -> (moves, scores) from pondering
+        self.last_pondered = False   # whether the last search() used a pondered result
+        self._abort = None    # callable checked at every node; True stops the search
 
     def __str__(self):
         temp = f", temperature {self.temperature:g}" if self.temperature > 0 else ""
@@ -325,10 +375,20 @@ class Bot:
 
     # --- root -----------------------------------------------------------------
 
-    def search(self, board: chess.Board):
+    def search(self, board: chess.Board, stop: threading.Event | None = None):
         """Return (move, white-perspective score): the best move, or a sampled one if
-        temperature > 0. A book move returns score None."""
-        self.last_book = False
+        temperature > 0. A book move returns score None. Setting stop (e.g. when
+        the bot's clock runs out) raises SearchAborted."""
+        if stop is None:
+            return self._search_root(board)
+        self._abort = stop.is_set
+        try:
+            return self._search_root(board)
+        finally:
+            self._abort = None
+
+    def _search_root(self, board):
+        self.last_book = self.last_pondered = False
         if self.book is not None:
             move = self.book.pick(board, self.rng)
             if move is not None:
@@ -340,7 +400,7 @@ class Bot:
             moves, scores, probs = self.move_distribution(board)
             i = self.rng.choice(len(moves), p=probs)
             return moves[i], float(scores[i])
-        moves, scores = self.root_scores(board, margin=0.0)
+        moves, scores = self._root_scores_or_pondered(board, margin=0.0)
         sign = 1 if board.turn == chess.WHITE else -1
         best = int(np.nanargmax(sign * scores))
         return moves[best], float(scores[best])
@@ -391,8 +451,7 @@ class Bot:
         """Return (moves, white-perspective scores, probabilities) with
         probabilities = softmax(score from the mover's side / temperature)."""
         temperature = temperature or self.temperature or 1.0
-        margin = None if self.sample_margin is None else self.sample_margin * temperature
-        moves, scores = self.root_scores(board, margin)
+        moves, scores = self._root_scores_or_pondered(board, self._margin(temperature))
         logits = (scores if board.turn == chess.WHITE else -scores) / temperature
         logits = np.where(np.isnan(logits), -np.inf, logits)   # pruned moves get probability 0
         probs = np.exp(logits - logits.max())   # subtract the max so mate scores can't overflow
@@ -400,12 +459,68 @@ class Bot:
         self.last_distribution = (moves, scores, probs)
         return moves, scores, probs
 
+    def _margin(self, temperature):
+        """The root_scores margin search() uses at this temperature."""
+        if temperature <= 0:
+            return 0.0
+        return None if self.sample_margin is None else self.sample_margin * temperature
+
+    def _root_scores_or_pondered(self, board, margin):
+        key = (hash(board._transposition_key()), margin)
+        if key in self.pondered:
+            self.nodes = self.cache_hits = 0
+            self.last_pondered = True
+            return self.pondered.pop(key)
+        return self.root_scores(board, margin)
+
+    # --- pondering ------------------------------------------------------------
+
+    def ponder(self, board: chess.Board) -> Ponder:
+        """Start thinking on the opponent's time; board has the opponent to move.
+        Call finish() on the result before this bot searches again."""
+        return Ponder(self, board)
+
+    def _ponder(self, board, handle):
+        """Search the bot's reply to each of the opponent's moves, the opponent's
+        likeliest moves first: the transposition table's best move, then by
+        network score from the opponent's side."""
+        self.pondered = {}
+        self._abort = handle.aborted
+        margin = self._margin(self.temperature)
+        try:
+            moves, statics, _ = self._score_children(board, ply=1)
+            sign = 1 if board.turn == chess.WHITE else -1
+            order = sorted(range(len(moves)), key=lambda i: -sign * statics[i])
+            entry = self.tt.get(hash(board._transposition_key()))
+            if entry is not None and entry[3] in moves:
+                first = moves.index(entry[3])
+                order.remove(first)
+                order.insert(0, first)
+            for i in order:
+                if handle.stop.is_set():
+                    break
+                board.push(moves[i])
+                if not board.is_game_over(claim_draw=True) and not (self.book and self.book.covers(board)):
+                    key = hash(board._transposition_key())
+                    handle.current = key
+                    self.pondered[(key, margin)] = self.root_scores(board, margin)
+                    handle.current = None
+                board.pop()
+        except SearchAborted:
+            pass
+        except Exception as e:
+            print(f"pondering failed: {e}")
+        finally:
+            self._abort = None
+
     # --- tree -----------------------------------------------------------------
 
     def _search(self, board, depth, alpha, beta, ply, static):
         """White-perspective value of board (not game over; its network score is
         static) searched depth more plies, then quiescence. Fail-soft: a result
         <= alpha is an upper bound, >= beta a lower bound."""
+        if self._abort is not None and self._abort():
+            raise SearchAborted
         if depth <= 0:
             return self._quiesce(board, alpha, beta, ply, static, 0)
 
@@ -452,6 +567,8 @@ class Bot:
 
     def _quiesce(self, board, alpha, beta, ply, static, qply):
         """Search captures (or every evasion when in check) until the position is quiet."""
+        if self._abort is not None and self._abort():
+            raise SearchAborted
         maximizing = board.turn == chess.WHITE
         sign = 1 if maximizing else -1
         in_check = board.is_check()
