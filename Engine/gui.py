@@ -7,6 +7,7 @@ Play against a SlackFish bot in the browser, or watch two bots play each other.
     uv run python Engine/gui.py --temperature 50         # vary the bot's moves
     uv run python Engine/gui.py --book                   # open from Models/Books/gm2001.bin
     uv run python Engine/gui.py --quiescence 0          # turn off quiescence search
+    uv run python Engine/gui.py --no-ponder             # don't think on the human's time
     uv run python Engine/gui.py --device cpu --port 8080 --no-browser
 
 The board is Chessground (lichess's board UI, loaded from jsDelivr). Rules,
@@ -25,11 +26,19 @@ Opening book (--book, or the page's Opening book menu): bots play moves from a
 Polyglot .bin book in Models/Books, sampled by how often each was played, until
 the game leaves the book or reaches --book-plies plies, then search as usual.
 
-Optional clock for the human player (--clock 5+3, or set in the page): it runs
-only on the human's turn and starts after their first move (as on lichess, so
-loading the page doesn't cost time), the bot thinks for free, and running out loses unless
-the bot has too little material to mate (then it's a draw). The server keeps the
-time, so every viewer sees the same clock.
+Optional clock (--clock 5+3, or set in the page): the human and the bot each
+get that time control. Each side's clock starts after its own first move (as on
+lichess, so loading the page doesn't cost time). Running out loses unless the
+opponent has too little material to mate (then it's a draw); a bot that runs out
+mid-search is stopped. The bot searches to its set depth without managing its
+time, so pick a depth it can afford. The server keeps the time, so every viewer
+sees the same clocks.
+
+Pondering: while it's the human's turn, the bot searches the human's likely
+replies in the background (see Bot.ponder). If the human plays one it has
+finished, it answers instantly; otherwise its caches are still warm. Pondering
+runs on the human's clock, so it costs the bot nothing. Turn it off
+with --no-ponder, e.g. to keep the GPU free.
 
 There is one shared game: every open page (including remote viewers through a
 tunnel such as `ngrok http 8000`) sees the same board, live, and anyone with the
@@ -46,7 +55,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import chess
 import chess.pgn
 
-from bots import BOTS, ROOT, OpeningBook, load_bot
+from bots import BOTS, ROOT, OpeningBook, SearchAborted, load_bot
 from export import game_gif, game_png
 from play import game_over
 
@@ -68,22 +77,27 @@ class Game:
     All methods except _bot_worker are called with self.lock held. Each change
     bumps self.version and wakes the /api/events streams so every open page
     updates. The bot searches on a background thread, so the board stays
-    responsive (and undo / new game still work) while it thinks.
+    responsive (and undo / new game still work) while it thinks. On the human's
+    turn it ponders on another background thread; a bot never runs both at once.
     """
 
     def __init__(self, white, black, device=None, fen=None, clock=None, delay=0.0,
-                 book=None, book_plies=16):
+                 book=None, book_plies=16, ponder=True):
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
         self.version = 0
         self.thinking = False
+        self.ponder_enabled = ponder
+        self.pondering = None     # the bot's Ponder while it thinks on the human's time
         self.device = device
-        # Human clock: clock = (base seconds, increment seconds) or None for no clock
+        # Clocks: clock = (base seconds, increment seconds) or None for no clock
         self.clock = None
-        self.time_left = None     # seconds, as of turn_start
+        self.time_left = None     # colour -> seconds, as of turn_start
+        self.clock_color = None   # whose clock is running
         self.turn_start = None    # time.monotonic() when the running clock was started, else None
-        self.flagged = False      # the human ran out of time
+        self.flagged = None       # the colour that ran out of time
         self.clock_token = 0      # bumped on every stop, so a stale flag timer does nothing
+        self.bot_stop = threading.Event()   # set to abort the bot's current search
         self.paused = False       # watch mode: don't start the next bot move
         self.book_plies = book_plies
         self.books = {}           # file name -> OpeningBook, opened on first use
@@ -104,6 +118,8 @@ class Game:
             raise ValueError(f"unknown opening book {book!r}")
         if book is not None and book not in self.books:
             self.books[book] = OpeningBook(os.path.join(BOOKS_DIR, book), max_plies=self.book_plies)
+        self._stop_ponder()
+        self.bot_stop.set()   # a bot still thinking about the old game
         self.book = book
         self.specs = {chess.WHITE: white, chess.BLACK: black}
         self.players = {color: None if spec is None else load_bot(
@@ -118,83 +134,123 @@ class Game:
         self.eval = None      # White-perspective score from the last bot search
         self.eval_by = None   # which bot made it
         self.eval_book = False   # the last bot move came from the opening book
+        self.ponder_hit = False  # the last bot move was found while pondering
         self.delay = delay if self.human_color is None else 0.0
         self.paused = False
         self._stop_clock()
         self.clock = clock if self.human_color is not None else None
-        self.time_left = self.clock[0] if self.clock else None
-        self.flagged = False
+        self.time_left = {chess.WHITE: self.clock[0], chess.BLACK: self.clock[0]} if self.clock else None
+        self.flagged = None
         self._changed()
         self._start_clock()
         self._start_bot_if_its_turn()
+        self._start_ponder()
 
-    # --- human clock -------------------------------------------------------
+    # --- clocks ------------------------------------------------------------
 
     def _over(self):
-        return self.flagged or game_over(self.board)
+        return self.flagged is not None or game_over(self.board)
 
-    def _human_has_moved(self):
+    def _has_moved(self, color):
         plies = len(self.board.move_stack)
-        human_first = self.board.root().turn == self.human_color
-        return (plies + 1) // 2 > 0 if human_first else plies // 2 > 0
+        moves_first = self.board.root().turn == color
+        return (plies + 1) // 2 > 0 if moves_first else plies // 2 > 0
 
     def _start_clock(self):
-        """Start the human's clock if it's their turn, after their first move, and
-        it isn't already running."""
-        if (self.clock is None or self.turn_start is not None or self._over()
-                or self.board.turn != self.human_color or not self._human_has_moved()):
+        """Start the clock of the side to move, after its first move, if no clock
+        is running."""
+        color = self.board.turn
+        if self.clock is None or self.turn_start is not None or self._over() or not self._has_moved(color):
             return
+        self.clock_color = color
         self.turn_start = time.monotonic()
-        timer = threading.Timer(max(0.0, self.time_left) + 0.05, self._flag, args=(self.clock_token,))
+        timer = threading.Timer(max(0.0, self.time_left[color]) + 0.05, self._flag, args=(self.clock_token,))
         timer.daemon = True
         timer.start()
 
-    def _stop_clock(self):
-        """Stop the running clock and charge the time used to the human."""
-        if self.turn_start is not None:
-            self.time_left -= time.monotonic() - self.turn_start
-            self.turn_start = None
+    def _stop_clock(self, increment=False):
+        """Stop the running clock and charge the time used to its side, plus the
+        increment if increment=True (a move was made). Returns that side's time
+        left, or None if no clock was running."""
+        if self.turn_start is None:
+            self.clock_token += 1
+            return None
+        color = self.clock_color
+        self.time_left[color] -= time.monotonic() - self.turn_start
+        self.turn_start = self.clock_color = None
         self.clock_token += 1
+        left = self.time_left[color]
+        if increment and left > 0:
+            self.time_left[color] += self.clock[1]
+        return left
 
-    def _clock_left(self):
+    def _clock_left(self, color):
         if self.time_left is None:
             return None
-        used = time.monotonic() - self.turn_start if self.turn_start is not None else 0.0
-        return max(0.0, self.time_left - used)
+        used = time.monotonic() - self.turn_start if color == self.clock_color else 0.0
+        return max(0.0, self.time_left[color] - used)
+
+    def _set_flagged(self, color):
+        self.time_left[color] = 0.0
+        self.flagged = color
+        self.bot_stop.set()   # the bot's search, if it's the bot's clock
+        self._stop_ponder()
+        self._changed()
 
     def _flag(self, token):
         with self.lock:
-            if token != self.clock_token or self._clock_left() > 0:
+            color = self.clock_color
+            if token != self.clock_token or self._clock_left(color) > 0:
                 return
             self._stop_clock()
-            self.time_left = 0.0
-            self.flagged = True
-            self._changed()
+            self._set_flagged(color)
 
     def _result(self):
         """(result, reason) if the game is over, else (None, None)."""
-        if self.flagged:
-            if self.board.has_insufficient_material(not self.human_color):
+        if self.flagged is not None:
+            if self.board.has_insufficient_material(not self.flagged):
                 return "1/2-1/2", "timeout vs insufficient material"
-            return ("0-1" if self.human_color == chess.WHITE else "1-0"), "timeout"
+            return ("0-1" if self.flagged == chess.WHITE else "1-0"), "timeout"
         if game_over(self.board):
             outcome = self.board.outcome(claim_draw=True)
             return outcome.result(), outcome.termination.name.replace("_", " ").lower()
         return None, None
+
+    # --- bot ---------------------------------------------------------------
+
+    def _start_ponder(self):
+        """On the human's turn, let the bot think about their likely replies."""
+        if (not self.ponder_enabled or self.pondering is not None or self.thinking
+                or self.human_color is None or self.board.turn != self.human_color or self._over()):
+            return
+        self.pondering = self.players[not self.human_color].ponder(self.board)
+        self._changed()
+
+    def _stop_ponder(self):
+        if self.pondering is not None:
+            self.pondering.finish()   # aborts within one search node
+            self.pondering = None
 
     def _start_bot_if_its_turn(self):
         bot = self.players[self.board.turn]
         if self.thinking or self._over() or bot is None or self.paused:
             return
         self.thinking = True
+        ponder, self.pondering = self.pondering, None   # the worker stops it before searching
+        self.bot_stop = threading.Event()
         self._changed()
-        threading.Thread(target=self._bot_worker, args=(bot, self.board.copy(), self.version, self.delay),
+        threading.Thread(target=self._bot_worker,
+                         args=(bot, self.board.copy(), self.version, self.delay, ponder, self.bot_stop),
                          daemon=True).start()
 
-    def _bot_worker(self, bot, board, started_at, delay):
+    def _bot_worker(self, bot, board, started_at, delay, ponder, stop):
         start = time.monotonic()
         try:
-            move, score = bot.search(board)   # slow part runs without the lock
+            if ponder is not None:
+                ponder.finish(board)   # lets a search of this exact position complete
+            move, score = bot.search(board, stop)   # slow part runs without the lock
+        except SearchAborted:   # out of time, undo or new game
+            move = None
         except Exception as e:
             print(f"bot search failed: {e}")
             move = None
@@ -204,13 +260,18 @@ class Game:
             self.thinking = False
             # Only play the move if nobody undid / restarted while the bot was thinking
             if move is not None and self.version == started_at:
+                if self.clock is not None and (left := self._stop_clock(increment=True)) is not None and left <= 0:
+                    self._set_flagged(board.turn)   # finished after its flag fell
+                    return
                 self._push(move, thought)
                 self.eval_by, self.eval_book = bot.name, score is None
                 if score is not None:   # a book move has no score: keep showing the last one
                     self.eval = score
+                self.ponder_hit = bot.last_pondered
                 self._start_clock()
             self._changed()
             self._start_bot_if_its_turn()   # e.g. a new game started with the bot to move
+            self._start_ponder()
 
     def state(self):
         b = self.board
@@ -245,10 +306,11 @@ class Game:
             "gameOver": over,
             "result": result,
             "reason": reason,
-            "flagged": self.flagged,
+            "flagged": self.flagged is not None,
             "clock": None if self.clock is None else {
                 "base": self.clock[0], "increment": self.clock[1],
-                "left": self._clock_left(), "running": self.turn_start is not None,
+                "white": self._clock_left(chess.WHITE), "black": self._clock_left(chess.BLACK),
+                "running": None if self.clock_color is None else "white" if self.clock_color == chess.WHITE else "black",
             },
             "eval": self.eval,
             "evalBy": self.eval_by,
@@ -258,6 +320,8 @@ class Game:
             "bots": available_bots(),
             "thinking": self.thinking,
             "thinkingBot": (self.players[b.turn].name if self.thinking and self.players[b.turn] else None),
+            "pondering": self.pondering is not None,
+            "ponderHit": self.ponder_hit,
             "paused": self.paused,
             "delay": self.delay,
             "version": self.version,
@@ -268,24 +332,26 @@ class Game:
         if self._over() or self.board.turn != self.human_color or move not in self.board.legal_moves:
             raise ValueError(f"illegal move {uci}")
         if self.clock is not None:
-            self._stop_clock()
-            if self.time_left <= 0:   # the move arrived after the flag fell
-                self.time_left, self.flagged = 0.0, True
-                self._changed()
+            left = self._stop_clock(increment=True)
+            if left is not None and left <= 0:   # the move arrived after the flag fell
+                self._set_flagged(self.human_color)
                 raise ValueError("out of time")
-            self.time_left += self.clock[1]
         self._push(move, time.monotonic() - self.turn_began)
         self._changed()
+        self._start_clock()   # the bot's
         self._start_bot_if_its_turn()
+        self._stop_ponder()   # still set only if the move ended the game
 
     def undo(self):
         # Take back to the last position where it was the human's turn. Time
         # already used stays used, and there's no undo after losing on time.
-        if self.flagged:
+        if self.flagged is not None:
             raise ValueError("can't undo after running out of time")
         if self.human_color is None:
             raise ValueError("no undo when watching; start a new game instead")
         self._stop_clock()
+        self._stop_ponder()
+        self.bot_stop.set()
         if self.board.move_stack:
             self.board.pop()
         while self.board.move_stack and self.board.turn != self.human_color:
@@ -294,9 +360,11 @@ class Game:
         self.turn_began = time.monotonic()
         self.eval = None
         self.eval_book = False
+        self.ponder_hit = False
         self._changed()
         self._start_clock()
         self._start_bot_if_its_turn()   # undoing to the start as Black: the bot moves again
+        self._start_ponder()
 
     def _push(self, move, seconds):
         self.board.push(move)
@@ -323,10 +391,10 @@ class Game:
         result, reason = self._result()
         if result:
             game.headers["Result"] = result
-            if self.flagged:
+            if self.flagged is not None:
                 game.headers["Termination"] = "time forfeit"
         if self.clock:
-            game.headers["TimeControl"] = f"{self.clock[0]:g}+{self.clock[1]:g} (human only)"
+            game.headers["TimeControl"] = f"{self.clock[0]:g}+{self.clock[1]:g}"
         return str(game)
 
 
@@ -479,6 +547,8 @@ def main():
                         help="opening book file in Models/Books for the bots (default with no name: gm2001.bin)")
     parser.add_argument("--book-plies", type=int, default=16,
                         help="leave the book after this many plies at most (default 16)")
+    parser.add_argument("--no-ponder", action="store_true",
+                        help="don't let the bot think on your time")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
     args = parser.parse_args()
@@ -489,7 +559,7 @@ def main():
     else:
         white, black = (None, bot(args.bot)) if args.color == "white" else (bot(args.bot), None)
     game = Game(white, black, args.device, args.fen, parse_clock(args.clock), parse_delay(args.delay),
-                args.book, args.book_plies)
+                args.book, args.book_plies, ponder=not args.no_ponder)
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(game))
     url = f"http://localhost:{args.port}"
