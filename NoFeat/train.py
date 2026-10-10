@@ -25,6 +25,10 @@ the model sees "White is winning" and "Black is winning" equally often. The
 validation set is scored both as-is and mirrored; a large gap between the two
 MAEs means the model evaluates the two colours inconsistently.
 
+Precision (--precision): mixed precision on CUDA. auto uses bf16 on GPUs with
+native bf16 (Ampere and newer) and fp16 with loss scaling on older ones such as
+Turing (RTX 20xx), where bf16 is emulated and several times slower.
+
 Data sources: --sources picks which CSVs to train on (games, random, tactics).
 The validation split is drawn from every source, and MAE is reported per
 source, so excluded sources (e.g. tactics) still show how the model handles them.
@@ -75,6 +79,8 @@ def parse_args():
                    help="chance each training position is colour-swapped (0 = off)")
     p.add_argument("--no-compile", dest="compile", action="store_false",
                    help="skip torch.compile (compiling takes ~1 min but trains ~1.5x faster)")
+    p.add_argument("--precision", choices=["auto", "bf16", "fp16", "fp32"], default="auto",
+                   help="mixed precision on CUDA (auto: bf16 if the GPU supports it natively, else fp16)")
     p.add_argument("--save-every", type=int, default=1000,
                    help="also write last.pt every N steps within an epoch (0 = only at epoch end)")
     p.add_argument("--resume", help="checkpoint to continue from")
@@ -95,12 +101,26 @@ def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=
         if mirror:
             sq, ca, tu = mirror_tokens(sq, ca, tu)
             y = -y
-        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+        with autocast(args, device):
             pred = model(sq, ca, tu).float()
         preds.append(pred.cpu())
         ys.append(y.cpu())
     model.train()
     return (torch.cat(preds), torch.cat(ys)) if preds else (torch.zeros(0), torch.zeros(0))
+
+
+def resolve_precision(args, device):
+    """Turn --precision auto into bf16 / fp16 / fp32 for this device."""
+    if device.type != "cuda":
+        return "fp32"
+    if args.precision == "auto":
+        return "bf16" if torch.cuda.get_device_capability(device)[0] >= 8 else "fp16"
+    return args.precision
+
+
+def autocast(args, device):
+    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(args.precision)
+    return torch.autocast(device.type, dtype=dtype or torch.float32, enabled=dtype is not None)
 
 
 def unit_cp(args):
@@ -126,6 +146,7 @@ def main():
     args = parse_args()
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    args.precision = resolve_precision(args, device)
     os.makedirs(args.out, exist_ok=True)
 
     data = np.load(args.data)
@@ -156,7 +177,8 @@ def main():
     train_idx = train_idx[use[source[train_idx]]]           # train only on the chosen sources
     val_used = use[source[val_idx]]                          # val positions from those sources
     print(f"training on {', '.join(args.sources)}: {len(train_idx):,} train / "
-          f"{val_used.sum().item():,} val (+{(~val_used).sum().item():,} val from other sources), device {device}")
+          f"{val_used.sum().item():,} val (+{(~val_used).sum().item():,} val from other sources), "
+          f"device {device}, {args.precision}")
 
     overrides = {k: v for k, v in dict(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads,
                                        d_ff=args.d_ff, dropout=args.dropout).items() if v is not None}
@@ -174,6 +196,7 @@ def main():
         progress = (step - args.warmup_steps) / max(1, total_steps - args.warmup_steps)
         return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_at)
+    scaler = torch.amp.GradScaler(device.type, enabled=args.precision == "fp16")   # fp16 needs loss scaling
 
     start_epoch, start_step, best_val, history = 1, 0, float("inf"), []
     if args.resume:
@@ -181,6 +204,8 @@ def main():
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        if ckpt.get("scaler_state_dict") and scaler.is_enabled():
+            scaler.load_state_dict(ckpt["scaler_state_dict"])
         best_val = ckpt["best_val"]
         history = ckpt["history"]
         if ckpt.get("step") is not None:   # saved mid-epoch
@@ -201,6 +226,7 @@ def main():
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler.is_enabled() else None,
             "model_class": type(model).__name__,
             "model_config": model.config,
             "target": args.target,
@@ -244,14 +270,16 @@ def main():
                 tu = torch.where(m, mtu, tu)
                 y = torch.where(m, -y, y)
 
-            with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+            with autocast(args, device):
                 pred = forward(sq, ca, tu)
             loss = criterion(pred.float(), y)
 
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)   # clip the real gradients, not the scaled ones
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            scaler.step(optimizer)   # skipped if fp16 gradients overflowed
+            scaler.update()
             scheduler.step()
 
             if step % 10 == 0:   # .item() syncs with the GPU, so don't do it every step

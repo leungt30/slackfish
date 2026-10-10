@@ -137,7 +137,7 @@
         <select id="book"></select></div>
     </div>
     <div class="row" id="tcrow">
-      <div><label for="tc">Your clock</label>
+      <div><label for="tc" title="You and the bot each get this time control. Running out loses.">Clock</label>
         <select id="tc">
           <option value="none">No clock</option>
           <option value="1+0">1 + 0 (bullet)</option>
@@ -168,9 +168,13 @@
         </select></div>
     </div>
     <button class="primary" id="new">New game</button>
-    <div class="clock" id="clock" hidden>
-      <span class="who" id="clockwho">Your clock</span>
-      <span class="time" id="clocktime">5:00</span>
+    <div class="clock" id="clock-bot" hidden>
+      <span class="who">Bot</span>
+      <span class="time">5:00</span>
+    </div>
+    <div class="clock" id="clock-you" hidden>
+      <span class="who">You</span>
+      <span class="time">5:00</span>
     </div>
     <div>
       <div id="status"></div>
@@ -278,7 +282,8 @@ function render(s) {
   } else if (watching && s.paused) {
     status = "Paused";
   } else {
-    status = s.turn === s.humanColor ? "Your move" + (s.check ? " (check)" : "") : "";
+    status = s.turn === s.humanColor ? "Your move" + (s.check ? " (check)" : "")
+      + (s.pondering ? ` <span style="color: var(--muted)">· ${botSpec.name} is thinking on your time</span>` : "") : "";
   }
   $("status").innerHTML = status;
 
@@ -332,10 +337,8 @@ function syncControls(s) {
 }
 
 // --- Clock: the server owns the time; this just counts down between updates ---
-let clockLeft = null, clockRunning = false, clockAt = 0;
+let clockAt = 0;   // performance.now() when the last state arrived
 function syncClock(s) {
-  clockLeft = s.clock ? s.clock.left : null;
-  clockRunning = !!(s.clock && s.clock.running);
   clockAt = performance.now();
 }
 function formatClock(t) {
@@ -345,20 +348,26 @@ function formatClock(t) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 function renderClock() {
-  const el = $("clock");
-  el.hidden = clockLeft === null;
-  if (clockLeft === null) return;
-  const t = Math.max(0, clockLeft - (clockRunning ? (performance.now() - clockAt) / 1000 : 0));
-  $("clocktime").textContent = formatClock(t);
-  const c = state && state.clock;
-  const waiting = c && !clockRunning && !state.gameOver && state.turn === state.humanColor && !state.thinking;
-  $("clockwho").textContent = (waiting ? "Starts after your first move" : "Your clock")
-    + (c && c.increment && !waiting ? ` · +${+c.increment.toFixed(2)}s per move` : "");
-  el.classList.toggle("running", clockRunning);
-  el.classList.toggle("low", t < 10 && t > 0);
-  el.classList.toggle("flagged", !!(state && state.flagged));
+  const c = state && state.humanColor && state.clock;
+  for (const who of ["bot", "you"]) {
+    const el = $("clock-" + who);
+    el.hidden = !c;
+    if (!c) continue;
+    const color = who === "you" ? state.humanColor : state.humanColor === "white" ? "black" : "white";
+    const running = c.running === color;
+    const t = Math.max(0, c[color] - (running ? (performance.now() - clockAt) / 1000 : 0));
+    el.querySelector(".time").textContent = formatClock(t);
+    const name = who === "you" ? "You" : (state.white || state.black).name;
+    const moved = state.history.filter((m, i) => m !== "…" && (i % 2 === 0) === (color === "white")).length > 0;
+    const waiting = !moved && !state.gameOver;
+    el.querySelector(".who").textContent = name + (waiting ? " · starts after first move"
+      : c.increment ? ` · +${+c.increment.toFixed(2)}s per move` : "");
+    el.classList.toggle("running", running);
+    el.classList.toggle("low", t < 10 && t > 0);
+    el.classList.toggle("flagged", state.flagged && t <= 0);
+  }
 }
-setInterval(() => { if (clockRunning) renderClock(); }, 100);
+setInterval(() => { if (state && state.clock && state.clock.running) renderClock(); }, 100);
 $("tc").onchange = updateModeUI;
 function clockSetting() {
   const v = $("tc").value;
