@@ -13,8 +13,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # 2. Install dependencies into .venv
 uv sync
 
-# 3. Play against the engine
-uv run python Engine/play.py --white human --black v2:2
+# 3. Play against the engine in the browser (default bot: t2-w-lichess-6.41m at depth 3)
+uv run python Engine/gui.py
 ```
 
 ## Current Status
@@ -25,11 +25,14 @@ uv run python Engine/play.py --white human --black v2:2
 | **v2** | `Models/Training/Models.py` | `Models/Weights/SlackFishCNN_V2_449` | Yes |
 | v3, v4 | `Models/Training/Models.py` | none | No (not registered in `Engine/bots.py`) |
 | **v5** | `Models/Training/Models.py` | **missing** (`SlackFishCNN_V5_79` was never committed) | No, needs retraining |
-| **t1-3.25m** | `NoFeat/model.py` | `Models/Weights/SlackFishV-T1-3.25M/best.pt` | Yes: SlackFishV-T1, 3.25M params, all 14M positions, 10 epochs, val MAE 143 cp |
-| **t1-alpha** | `NoFeat/model.py` | `Models/Weights/SlackFishV-T1-alpha/best.pt` | Yes: 2M random positions, 3 epochs, val MAE 194 cp; 5.5/6 vs v2 |
-| **t2-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-6.41M/best.pt` | Yes: SlackFishV-T2, 6.41M params, games + random, colour-swap augmentation, 6 epochs, val MAE 155 cp (mirrored 155) |
-| **t2-w-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-6.41M/best.pt` | Yes: T2 with a win-probability target, games + random, 8 epochs, val MAE games 128 / random 167 / tactics 630 cp |
-| **t2-w-all-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-All-6.41M/best.pt` | Yes: as t2-w, plus tactics, 8 epochs, val MAE games 142 / random 171 / tactics 356 cp |
+| **t1-3.25m** | `NoFeat/model.py` | `Models/Weights/SlackFishV-T1-3.25M/` | Yes: SlackFishV-T1, 3.25M params, all 14M positions, 10 epochs, val MAE 143 cp |
+| **t1-alpha** | `NoFeat/model.py` | `Models/Weights/SlackFishV-T1-alpha/` | Yes: 2M random positions, 3 epochs, val MAE 194 cp; 5.5/6 vs v2 |
+| **t2-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-6.41M/` | Yes: SlackFishV-T2, 6.41M params, games + random, colour-swap augmentation, 6 epochs, val MAE 155 cp (mirrored 155) |
+| **t2-w-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-6.41M/` | Yes: T2 with a win-probability target, games + random, 8 epochs, val MAE games 128 / random 167 / tactics 630 cp |
+| **t2-w-all-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-All-6.41M/` | Yes: as t2-w, plus tactics, 8 epochs, val MAE games 142 / random 171 / tactics 356 cp |
+| **t2-w-lichess-6.41m** (default) | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-Lichess-6.41M/` | **Yes, strongest:** as t2-w, plus tactics and 393M Lichess positions, 1 epoch, val MAE games 114 / random 155 / tactics 293 cp. Scored 126/128 against t2-w; about 2255 Elo on Stockfish's scale at depth 3 |
+
+Each NoFeat folder holds `model.safetensors` + `config.json` (the inference export, see [Sharing models](#sharing-models)) and/or the training checkpoint `best.pt`; the bots use the export when it's there.
 
 V5 is the latest model described in `REPORT.md`. Its original checkpoint is lost, so it has to be retrained (see [Retraining V5](#retraining-v5)). Once a checkpoint exists at `Models/Weights/SlackFishCNN_V5_79`, or is passed with `--white-weights` / `--black-weights`, it plays with no code changes.
 
@@ -57,8 +60,8 @@ Notes:
 ### In the browser (recommended for human vs bot)
 
 ```bash
-uv run python Engine/gui.py                              # opens http://localhost:8000
-uv run python Engine/gui.py --bot t1-alpha:3 --color black
+uv run python Engine/gui.py                              # opens http://localhost:8000, vs t2-w-lichess-6.41m:3
+uv run python Engine/gui.py --bot t2-w-6.41m:2 --color black
 uv run python Engine/gui.py --temperature 50              # sample moves instead of always the best (centipawns)
 uv run python Engine/gui.py --book                       # bots open from the gm2001 book (also a menu in the page)
 uv run python Engine/gui.py --device cpu                 # keep the GPU free, e.g. while training
@@ -181,20 +184,30 @@ The `encode` function must build features in exactly the same order as the train
 **Target:** Stockfish centipawns from White's perspective (as in the CSVs), clipped to ±1500 and divided by 500, trained with MSE. Forced mates become ±(32000 − N) before clipping, so they end up at ±1500. Black's evaluation is the negative of White's; the search minimizes on Black's turn.
 
 ```bash
-# 1. Encode all CSVs, each position tagged with its source (~20s for 16.6M positions) -> data/nofeat.npz (~1.1 GB)
+# 1. Encode all CSVs, each position tagged with its source (~40s for 16.6M positions) -> data/nofeat.npz (~1.1 GB)
 uv run python -m NoFeat.prepare_data
 uv run python -m NoFeat.prepare_data --limit 50000 --out data/nofeat_small.npz   # small test set
+# ... plus the Lichess evaluation database (see Data): ~410M positions in ~20 min, written as a
+# packed folder (squares two per byte, ~15 GB) so it fits in RAM for training
+uv run python -m NoFeat.prepare_data --lichess /path/to/lichess_db_eval.jsonl.zst --out /data/slackfish/nofeat_all
 
 # 2. Train a named model. --out is required; checkpoints go to <out>/{last,best}.pt
 uv run python -m NoFeat.train --out Models/Weights/SlackFishV-T3 --epochs 10
 uv run python -m NoFeat.train --out Models/Weights/SlackFishV-T3 --resume Models/Weights/SlackFishV-T3/last.pt --epochs 15
 uv run python -m NoFeat.train --out /tmp/smoke --data data/nofeat_small.npz --epochs 2   # smoke test
+# The t2-w-lichess-6.41m run: one pass over everything, validating a 200k subset every 10k steps
+uv run python -m NoFeat.train --arch v2 --target winprob --sources games random tactics lichess \
+    --epochs 1 --batch-size 512 --dropout 0 --val-frac 0.005 --val-every 10000 --save-every 5000 \
+    --data /data/slackfish/nofeat_all --out Models/Weights/SlackFishV-T2-W-Lichess-6.41M
+
+# 2b. Export for play and sharing: model.safetensors + config.json next to best.pt
+uv run python -m NoFeat.export Models/Weights/SlackFishV-T3/best.pt
 ```
 
 **3. Register it to play.** Add one line to `BOTS` in `Engine/bots.py`:
 
 ```python
-"t3": NoFeatSpec("Models/Weights/SlackFishV-T3/best.pt"),
+"t3": NoFeatSpec("Models/Weights/SlackFishV-T3"),
 ```
 
 Then it's available as `--black t3:2` in `play.py` and in the GUI's bot list.
@@ -208,18 +221,37 @@ epoch 2: train 0.8233  val MSE 0.7999  val MAE 315 cp  mirrored 309 cp  (27s)
 
 **Colour-swap augmentation:** half of the training positions (`--augment-prob 0.5`) are mirrored with colours, castling and turn swapped and the score negated (`NoFeat/augment.py`, equivalent to python-chess `board.mirror()`). `mirrored` in the log is validation MAE on the colour-swapped validation set. If it's far from the normal MAE, the model treats the two colours differently. SlackFishV-T1-3.25M, trained without augmentation, scores 136 cp as-is and 182 cp mirrored.
 
-Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--clip`, `--scale`, `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
+Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
 
 **Performance on an RTX 500 Ada laptop GPU (4 GB):** about 3,700 positions/s with `torch.compile`, so one epoch over all 14M positions takes about 62 minutes. Peak GPU memory is about 3 GB at batch size 1024. In play it's much faster than v1/v2, because there's no feature engineering: depth 2 takes about 0.2s per move.
 
 **Smoke test results** (100k positions, 3 epochs): validation MAE fell from 331 to 286 cp. This only shows the pipeline works; see [Experiments](#experiments) for the full runs.
 
+### Sharing models
+
+Training checkpoints (`best.pt`, `last.pt`) are ~77 MB, two thirds of which is optimizer state, and loading them runs pickled Python (`torch.load(..., weights_only=False)`), so only load ones you trust. For playing and moving models between machines, export them:
+
+```bash
+uv run python -m NoFeat.export --all     # every Models/Weights/*/best.pt -> model.safetensors + config.json
+```
+
+`model.safetensors` holds only the weights (25.6 MB for the 6.41M models, 13 MB for 3.25M) and can't run code when loaded; `config.json` has the model class, size, score scale and a training summary. Evaluations are bit-identical to the checkpoint's. The bots load a folder's `model.safetensors` if present, else `best.pt`. If neither is there and `SLACKFISH_HF_REPO` names a Hugging Face model repo holding `<folder>/model.safetensors` + `config.json`, the model is downloaded on first use. Keep `last.pt` (gitignored) only if you want to resume training.
+
 ## Experiments
 
-Everything below ran on one RTX 500 Ada laptop GPU (4 GB). Two kinds of measurement:
+Two machines were used:
+
+| | Laptop | Desktop |
+|---|---|---|
+| GPU | RTX 500 Ada (4 GB) | RTX 2080 Ti (11 GB, Turing, 250 W default / 280 W max power limit) |
+| CPU / RAM | | Intel i7-7700 (4 cores, 8 threads) / 31 GB |
+| Runs | T1-alpha, T1-3.25M, T2-6.41M, T2-W-6.41M, all search experiments | T2-W-All-6.41M, T2-W-Lichess-6.41M, the 128-game matches and the Stockfish ratings |
+
+Three kinds of measurement:
 
 - **Validation MAE:** mean absolute error against Stockfish on held-out positions, in centipawns clipped to ±1500, so it compares across targets.
-- **Matches:** 8 openings (Italian, Sicilian, QGD, King's Indian, French, Caro-Kann, English, Réti), each played once with each colour, so 16 games per pairing. Bots are deterministic, so a fixed opening set is the only source of variety. Games still going at move 150 count as draws. Elo differences are rough: with 16 games, the 95% interval on a score is about ±23 percentage points.
+- **Matches:** bot against bot at a fixed depth. The early ones used 8 named openings (Italian, Sicilian, QGD, King's Indian, French, Caro-Kann, English, Réti), each played once with each colour, so 16 games per pairing. Later ones (`Engine/match.py`) use 64 openings sampled 10 plies deep from the gm2001 book, each with both colours, so 128 games. Bots are deterministic, so the openings are the only source of variety. Games still going at move 150 count as draws. With 16 games the 95% interval on a score is about ±23 percentage points (roughly ±150 Elo); with 128 games about ±8 points (roughly ±50 Elo).
+- **Ratings against Stockfish 19:** its `UCI_LimitStrength` / `UCI_Elo` levels serve as fixed anchors, and the bot's rating is fitted by maximum likelihood over all games. That scale is calibrated against engine rating lists, not human ratings, and it depends on how much time Stockfish gets per move.
 
 ### Training runs
 
@@ -231,7 +263,8 @@ All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine de
 | T1-3.25M | V1, 3.25M | games + random (13.7M) | cp (MSE) | no | 10 | ~62 min | 143 cp (182 mirrored) |
 | T2-6.41M | V2, 6.41M | games + random | cp (MSE) | 50% | 6 | ~2.6 h | 155 cp |
 | **T2-W-6.41M** | V2, 6.41M | games + random | win probability (BCE) | 50% | 8 | ~2.6 h | **131 cp** |
-| T2-W-All-6.41M | V2, 6.41M | games + random + tactics (16.3M) | win probability (BCE) | 50% | 8 | faster GPU, fp16 | 178 cp (all three sources) |
+| T2-W-All-6.41M | V2, 6.41M | games + random + tactics (16.3M) | win probability (BCE) | 50% | 8 | 52 min (2080 Ti, fp16) | 178 cp (all three sources) |
+| **T2-W-Lichess-6.41M** | V2, 6.41M, no dropout | games + random + tactics + Lichess (407.7M) | win probability (BCE) | 50% | 1 | 19.3 h (2080 Ti, fp16) | **106 cp (all four sources), 106 mirrored** |
 
 Val MAE by epoch:
 
@@ -241,15 +274,38 @@ Val MAE by epoch:
 | T2-6.41M (cp) | 188 | 177 | 167 | 162 | 157 | 155 | | | |
 | T2-W-6.41M (win prob.) | 184 | 169 | 155 | 147 | 142 | 135 | 133 | 131 | |
 
-T2-W-All validates on all three sources, including tactics positions, so compare it with the others using the per-source MAE in its log, not the overall number. The validation positions are identical across runs (same data file and seed), so these compare directly:
+T2-W-All and T2-W-Lichess validate on every source, including ones the others didn't train on, so compare models with the per-source MAE, not the overall number. T2-W and T2-W-All share their validation positions (same data file and seed). T2-W-Lichess has its own split of the bigger data set (0.5% held out), drawn from the same sources, so differences of a few cp against it are within noise:
 
-| Val MAE by source | T2-W-6.41M (games + random) | T2-W-All-6.41M (+ tactics) |
-|---|---|---|
-| games | **128 cp** | 142 cp |
-| random | **167 cp** | 171 cp |
-| tactics | 630 cp | **356 cp** |
+| Val MAE by source | T2-W-6.41M (games + random) | T2-W-All-6.41M (+ tactics) | T2-W-Lichess-6.41M (+ tactics + Lichess) |
+|---|---|---|---|
+| games | 128 cp | 142 cp | **114 cp** |
+| random | 167 cp | 171 cp | **155 cp** |
+| tactics | 630 cp | 356 cp | **293 cp** |
+| lichess | | | 105 cp |
+
+T2-W-All by epoch (16.25M training positions, 31,747 steps of 512 per epoch):
+
+| Epoch | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| games | 183 | 176 | 171 | 162 | 155 | 148 | 145 | 142 |
+| random | 362 | 323 | 292 | 260 | 218 | 189 | 178 | 171 |
+| tactics | 509 | 459 | 430 | 412 | 391 | 377 | 360 | 356 |
 
 Adding the tactics data roughly halved the error on tactical positions, at a cost of 14 cp on positions from real games. T2-W-All was trained on a different machine in float16 rather than bfloat16, so data is not the only difference. Its error was still falling at epoch 8.
+
+**T2-W-Lichess learning curve.** One pass over 407.7M positions (796,386 steps of 512), with the learning rate warming up to 3e-4 and then following a cosine decay to 3e-5. Every 10,000 steps a fixed 200k-position validation subset was scored:
+
+| Step | 10k | 50k | 100k | 200k | 300k | 400k | 500k | 600k | 700k | 790k |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Positions seen | 5M | 26M | 51M | 102M | 154M | 205M | 256M | 307M | 358M | 404M |
+| Overall | 236 | 201 | 183 | 160 | 143 | 128 | 120 | 114 | 109 | 107 |
+| games | 199 | 174 | 160 | 146 | 137 | 127 | 122 | 118 | 115 | 115 |
+| random | 392 | 372 | 343 | 257 | 224 | 186 | 165 | 164 | 153 | 153 |
+| tactics | 602 | 552 | 543 | 492 | 424 | 374 | 334 | 312 | 298 | 291 |
+
+It passed T2-W's final error on game positions (128) after about 205M positions, about 1.9× the ~110M position-updates T2-W got from 8 epochs over 13.7M positions. Over the last 150k steps, with the learning rate near its minimum, the games error stayed at 115–118: the 6.41M model looks close to its capacity on this data.
+
+**Training choices for the single-epoch run:** no dropout (every position is new, so there's nothing to memorize), a 0.5% validation split (2.05M positions; 2% would be 8M and slow to score), and a validation subset every 10k steps for a learning curve. All 409,798,830 positions are held in RAM by packing the 64 square tokens two per byte (4 bits each): about 38 bytes per position, 15 GB on disk, and about 25 GB of the desktop's 31 GB RAM in use while training.
 
 **Win-probability target** (`--target winprob`): the label is `sigmoid(cp / 400)` and the model outputs a logit, trained with binary cross-entropy. In play, `logit × 400` is used as a centipawn-like score, so search, sampling and the eval bar work unchanged. Errors in balanced positions (0 vs +200 cp is 50% vs 62%) cost far more than errors in won ones (+1000 vs +1500 is 92% vs 98%), and forced mates need no clipping.
 
@@ -260,7 +316,49 @@ Adding the tactics data roughly halved the error on tactical positions, at a cos
 | T2-W-6.41M vs T2-6.41M | 10.5 / 16 | 9 / 1 / 4 (+2 unfinished) | +110 |
 | T2-W-6.41M vs T1-3.25M | 11 / 16 | 10 / 1 / 4 (+1 unfinished) | +135 |
 
+| T2-W-All-6.41M vs T2-W-6.41M | 7 / 16 | 4 / 6 / 6 | −44 |
+| T2-W-All-6.41M vs T2-6.41M | 10.5 / 16 | 7 / 7 / 2 | +112 |
+| T2-W-All-6.41M vs T1-3.25M | 10 / 16 | 6 / 8 / 2 | +89 |
+
+| Match (depth 2, 128 games: 64 book openings × both colours) | Score | W / D / L | Rough Elo (95% interval) |
+|---|---|---|---|
+| T2-W-All-6.41M vs T2-W-6.41M | 52.5 / 128 (41%) | 32 / 41 / 55 | −63 (−115 to −14) |
+| **T2-W-Lichess-6.41M vs T2-W-6.41M** | **126 / 128 (98%)** | **124 / 4 / 0** | **about +700** (too lopsided to pin down) |
+
 Earlier, smaller checks of 2–4 games: T1-3.25M drew T1-alpha 1–1. T2-6.41M beat T1-3.25M 2–0, despite its higher validation error.
+
+The 16-game T2-W-All vs T2-W result (−44) looked like a tie; the 128-game match showed T2-W-All is genuinely weaker. T2-W-Lichess won every decisive game against T2-W, with identical scores as White and Black (63/64 each). The two networks' raw evaluations suggest why: T2-W rates balanced positions as clearly better for White (+77 cp at the start, +140 in an Italian Game), while T2-W-Lichess gives +28 and +71, close to what strong engines say. At depth 2 the bot leans almost entirely on its evaluation, so a systematic bias gets exploited in every game.
+
+### Strength against Stockfish
+
+`Engine/match.py BOT stockfish:LEVELS`: 12 book openings × both colours × each level, Stockfish 19 on one thread.
+
+| Bot | Stockfish time / move | Levels (games each) | Rating (Stockfish scale, 95% interval) |
+|---|---|---|---|
+| T2-W-6.41M, depth 2 | 0.3 s | 1320 (8 games) | 1 / 8: very roughly 1000 |
+| T2-W-Lichess-6.41M, depth 2 | 0.5 s | 1320–2100 (24) | **1972 ± 84** |
+| T2-W-Lichess-6.41M, depth 3 | 1 s | 1700–2500 (24) | **2255 ± 80** |
+
+T2-W-Lichess at depth 3 against each level:
+
+| Stockfish level | 1700 | 1900 | 2100 | 2300 | 2500 |
+|---|---|---|---|---|---|
+| Score / 24 | 19.5 | 20.5 | 13.5 | 12.5 | 10.5 |
+| W / D / L | 19 / 1 / 4 | 19 / 3 / 2 | 10 / 7 / 7 | 11 / 3 / 10 | 9 / 3 / 12 |
+
+At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It still scored 44% against the strongest level tested, so the top of its range isn't pinned down. Depth 3 adds roughly 300 Elo, though part of that gap is Stockfish getting 1 s instead of 0.5 s. A depth-3 move takes a median 0.73 s (1.7 s at most) on the desktop.
+
+### Hardware and speed
+
+| Experiment | Result |
+|---|---|
+| **bf16 vs fp16 training on the RTX 2080 Ti** | bf16 is emulated on Turing: 2.8 steps/s (batch 512) vs 9.8 steps/s for fp16 with loss scaling, 3.5× faster with the same losses. `--precision auto` now picks fp16 on pre-Ampere GPUs. An 8-epoch run went from an estimated 25 h to 7 h. |
+| **Attention kernels** | Flash attention and cuDNN attention need Ampere or newer (FlashAttention-2 dropped Turing). The memory-efficient (CUTLASS) kernel built for sm75 is what PyTorch picks, and is 2.4× faster than the plain math fallback (9.0 vs 22.1 ms fwd+bwd per layer at batch 512). With 66 tokens attention is a small part of the work; most of it is the feed-forward layers. |
+| **Power limit 250 W → 280 W** | Training was power-capped (248 W of 250, "SW Power Cap" active, 74 °C). At 280 W the clock rose from ~1710 to ~1770 MHz (+3.5%) but training only from ~11.4 to ~11.6 steps/s (+1–2%), at 78 °C. |
+| **Whole-data packing** | 64 square tokens at 4 bits each instead of a byte: 409.8M positions in 15 GB instead of ~29 GB, unpacked on the GPU per batch at no measurable cost (11.5 steps/s, faster than the unpacked 16M-position run). |
+| **Parallel games on one GPU** | Each game process uses ~400 MB of GPU memory but a full CPU core (the search is Python). 3 processes: ~40 s per depth-2 game, 4.5 games/min. 6 processes: ~57 s per game, 6.3 games/min. The 8-thread CPU, not the GPU, sets the limit at about 6–7. |
+| **Pondering** (thinking on the opponent's time) | A predicted reply is answered in 0.001 s instead of 1.2 s (depth 3, same move and score as a fresh search). A wrong prediction aborts the background search within ~5 ms, and the search caches stay warm. |
+| **Exported weights** | `model.safetensors` is 25.6 MB vs 77 MB for `best.pt` (optimizer state dropped), with bit-identical evaluations. |
 
 ### Search and inference
 
@@ -286,9 +384,14 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 3. **Lower validation error doesn't guarantee stronger play.** T2 (155 cp) beat T1 (143 cp) in games. Match results decide, not MAE alone.
 4. **Colour-swap augmentation fixes colour bias.** Without it, T1-3.25M scored 136 cp as-is but 182 cp on mirrored positions. With it, the two numbers agree within ~1 cp.
 5. **Batching matters more than caching.** Evaluating all of a node's children in one forward pass is the main speed trick. Caches and the transposition table add only modest savings on top of it.
-6. **Small samples mislead.** Single games between deterministic bots are repeats of each other, and even 16-game matches leave about ±150 Elo of uncertainty. Use varied openings, or the opening book, and as many games as time allows.
+6. **Small samples mislead.** Single games between deterministic bots are repeats of each other, and even 16-game matches leave about ±150 Elo of uncertainty: T2-W-All looked even with T2-W over 16 games (−44) but was clearly weaker over 128 (−63, interval −115 to −14). Use varied openings, or the opening book, and as many games as time allows.
+7. **More data beat everything else, by far.** Going from 16M to 409M positions (deeper Stockfish evaluations of positions from real play) took the same 6.41M model from T2-W's level to a 126–2 match score against it and about 2255 Elo on Stockfish's scale at depth 3, the largest single gain in the project. No change to the model, target or search came close.
+8. **A small validation gain can be a large playing gain.** On game positions the error only went from 128 to 114 cp, yet the match was 126–2. The CSV labels are Stockfish 11 at depth 22, and MAE against them understates how much better the new evaluations are; systematic biases (like T2-W's +77 cp for White at the start) cost far more in play than random error does.
+9. **Mixing in a narrow data source can hurt.** Adding 2.6M tactics positions to 14M others improved tactics but made the bot weaker (−63 Elo), since it took a sixth of training away from ordinary positions. Diluted inside 409M positions, the same tactics data no longer hurt.
+10. **Check the hardware's number formats.** On Turing GPUs bf16 is emulated: fp16 with loss scaling trained 3.5× faster. Raising the power limit gave only 1–2%.
+11. **With this much data, model size is likely the next limit.** The single-epoch curve flattened near 115 cp on game positions while the learning rate was low, unlike the 16M-position runs, where size made no difference. A larger model (e.g. width 384, 8 heads of 48) is the natural next experiment.
 
-Ideas not yet tried: more data (the Lichess evaluation database has hundreds of millions of scored positions), a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, pondering on the opponent's time, and a larger model once the data grows.
+Ideas not yet tried: a larger model on the full data, more epochs over it, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, time management (the bot searches to a fixed depth, so it can lose on time in the GUI), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
 
 ## Repository Layout
 
@@ -298,6 +401,7 @@ Ideas not yet tried: more data (the Lichess evaluation database has hundreds of 
 │   ├── bots.py              # Model registry, feature encoding, evaluator, minimax search
 │   ├── play.py              # Game runner + CLI (bot/human vs bot/human)
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
+│   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
 │   ├── export.py            # Game -> animated GIF / final-position PNG
 │   ├── GameLoop.py          # Legacy, broken (see below)
 │   ├── BotVsBot.py          # Legacy, needs V5 weights
@@ -305,14 +409,16 @@ Ideas not yet tried: more data (the Lichess evaluation database has hundreds of 
 │   └── testAllMovesFromFen  # Legacy, broken
 ├── NoFeat/
 │   ├── encode.py            # FEN -> 64 square tokens + castling token + turn token
-│   ├── model.py             # ChessTransformerV1
-│   ├── prepare_data.py      # CSVs -> data/nofeat.npz
+│   ├── model.py             # ChessTransformerV1, ChessTransformerV2
+│   ├── augment.py           # Colour-swap augmentation
+│   ├── prepare_data.py      # CSVs (+ Lichess) -> .npz or a packed folder
 │   ├── train.py             # Training loop
-│   └── evaluator.py         # Load a checkpoint for play
+│   ├── export.py            # Checkpoint -> model.safetensors + config.json
+│   └── evaluator.py         # Load a model for play
 ├── Models/
 │   ├── Scalers/             # scaler_X.pkl, scaler_Y.pkl (v1/v2), scaler_Y_9M.pkl (v5)
 │   ├── Training/            # Model definitions and training scripts
-│   ├── Weights/             # Model checkpoints (V1, V2 only)
+│   ├── Weights/             # Model checkpoints and exports, one folder per NoFeat model
 │   └── Books/               # Polyglot opening books (gm2001.bin)
 ├── data/                    # Raw CSVs, not committed (gitignored)
 ├── featureEng.py            # FEN-to-feature engineering
@@ -365,6 +471,10 @@ data/tactic_evals.csv    # 2,628,219 positions
 ```
 
 `data/` is gitignored. In git worktrees it can be a symlink to the main checkout's `data/`, so the large files live in one place.
+
+### Lichess evaluation database
+
+The [Lichess evaluation database](https://database.lichess.org/#evals) (`lichess_db_eval.jsonl.zst`, 22.4 GB compressed, CC0) has 416,442,401 positions analysed with Stockfish by Lichess users, one JSON line each: a FEN without move counters, and one or more evaluations, each with its search depth and principal variations (`cp` or `mate`, from White's perspective, best line first). `NoFeat.prepare_data --lichess` streams it through `zstd -dc`, takes each position's deepest evaluation, and keeps those searched to depth 20 or more (`--min-depth`): 393,212,303 positions (94.4%). The median depth is about 37, far deeper than the CSVs' depth 22. The positions are ones people chose to analyse, so they lean towards openings, sharp middlegames and endgames rather than random play; 12% of the combined set are forced mates.
 
 ## Retraining V5
 
