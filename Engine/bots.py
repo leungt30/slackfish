@@ -22,6 +22,10 @@ import torch.nn as nn
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_BOOK = os.path.join(ROOT, "Models", "Books", "gm2001.bin")
+# Hugging Face model repo holding exported NoFeat models as <folder>/model.safetensors
+# + config.json (see NoFeat/export.py). A missing model is downloaded from here on
+# first use. None = local files only. SLACKFISH_HF_REPO overrides it.
+HF_REPO = os.environ.get("SLACKFISH_HF_REPO") or None
 for p in (ROOT, os.path.join(ROOT, "Models", "Training")):
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -112,17 +116,42 @@ class BotSpec:
     def make_evaluator(self, weights=None, device=None):
         return Evaluator(self, weights, device)
 
+    def available(self) -> bool:
+        return os.path.exists(os.path.join(ROOT, self.weights))
+
 
 @dataclass
 class NoFeatSpec:
-    """Transformer from NoFeat/: the checkpoint carries its own config and target scale."""
-    weights: str
+    """Transformer from NoFeat/, stored in a folder under Models/Weights: the exported
+    model.safetensors + config.json (NoFeat.export) if present, else the training
+    checkpoint best.pt. If neither is there, it is downloaded from HF_REPO."""
+    weights: str   # folder, relative to repo root
+
+    def local_path(self) -> str | None:
+        folder = os.path.join(ROOT, self.weights)
+        for name in ("model.safetensors", "best.pt"):
+            if os.path.exists(os.path.join(folder, name)):
+                return os.path.join(folder, name)
+        return None
+
+    def available(self) -> bool:
+        return self.local_path() is not None or HF_REPO is not None
+
+    def download(self) -> str:
+        from huggingface_hub import hf_hub_download
+        name = os.path.basename(self.weights)
+        for file in ("config.json", "model.safetensors"):
+            path = hf_hub_download(HF_REPO, f"{name}/{file}", local_dir=os.path.dirname(os.path.join(ROOT, self.weights)))
+        return path
 
     def make_evaluator(self, weights=None, device=None):
         from NoFeat.evaluator import NoFeatEvaluator
-        path = weights or os.path.join(ROOT, self.weights)
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"No checkpoint at {path}. Train it with `uv run python -m NoFeat.train`")
+        path = weights or self.local_path()
+        if path is None and HF_REPO is not None:
+            path = self.download()
+        if path is None or not os.path.exists(path):
+            raise FileNotFoundError(f"No model in {os.path.join(ROOT, self.weights)}. Train it with "
+                                    f"`uv run python -m NoFeat.train` or set SLACKFISH_HF_REPO to download it")
         return NoFeatEvaluator(path, device)
 
 
@@ -136,11 +165,12 @@ BOTS = {
     "v5": BotSpec(lambda: SlackFishCNN_V5(24, 24), encode_v5,
                   "Models/Weights/SlackFishCNN_V5_79",
                   "Models/Scalers/scaler_Y_9M.pkl"),
-    "t1-3.25m": NoFeatSpec("Models/Weights/SlackFishV-T1-3.25M/best.pt"),
-    "t1-alpha": NoFeatSpec("Models/Weights/SlackFishV-T1-alpha/best.pt"),
-    "t2-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-6.41M/best.pt"),   # ChessTransformerV2
-    "t2-w-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-6.41M/best.pt"),   # V2, win-probability target
-    "t2-w-all-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-All-6.41M/best.pt"),   # V2, win-prob, + tactics
+    "t1-3.25m": NoFeatSpec("Models/Weights/SlackFishV-T1-3.25M"),
+    "t1-alpha": NoFeatSpec("Models/Weights/SlackFishV-T1-alpha"),
+    "t2-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-6.41M"),   # ChessTransformerV2
+    "t2-w-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-6.41M"),   # V2, win-probability target
+    "t2-w-all-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-All-6.41M"),   # V2, win-prob, + tactics
+    "t2-w-lichess-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-Lichess-6.41M"),   # V2, win-prob, + 393M Lichess positions, 1 epoch
 }
 
 
