@@ -29,12 +29,19 @@ Precision (--precision): mixed precision on CUDA. auto uses bf16 on GPUs with
 native bf16 (Ampere and newer) and fp16 with loss scaling on older ones such as
 Turing (RTX 20xx), where bf16 is emulated and several times slower.
 
+Data (--data): an .npz from NoFeat.prepare_data, or a packed folder from it
+(squares stored two per byte, unpacked on the GPU per batch), which is how all
+~410M Lichess positions fit in RAM. --val-every N also scores a fixed
+--val-subset of the validation set every N steps, so a long single epoch still
+gives a learning curve (stored as "curve" in the checkpoint).
+
 Data sources: --sources picks which CSVs to train on (games, random, tactics).
 The validation split is drawn from every source, and MAE is reported per
 source, so excluded sources (e.g. tactics) still show how the model handles them.
 best.pt is chosen by validation MSE on the training sources only.
 """
 import argparse
+import json
 import math
 import os
 import time
@@ -45,6 +52,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from NoFeat.augment import mirror_tokens
+from NoFeat.encode import unpack_squares
 from NoFeat.model import MODELS
 
 
@@ -56,6 +64,9 @@ def parse_args():
                    help="data sources to train on: games, random, tactics (default: games random)")
     p.add_argument("--limit", type=int, help="use a random sample of N positions (before the source filter)")
     p.add_argument("--val-frac", type=float, default=0.02)
+    p.add_argument("--val-every", type=int, default=0,
+                   help="also score --val-subset validation positions every N steps (0 = only per epoch)")
+    p.add_argument("--val-subset", type=int, default=200_000)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--lr", type=float, default=3e-4)
@@ -96,7 +107,7 @@ def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=
     preds, ys = [], []
     for i in range(0, len(idx), 1024):
         b = idx[i:i + 1024]
-        sq, ca, tu = squares[b].to(device).long(), castling[b].to(device).long(), turn[b].to(device).long()
+        sq, ca, tu = batch_squares(squares, b, device), castling[b].to(device).long(), turn[b].to(device).long()
         y = targets[b].to(device)
         if mirror:
             sq, ca, tu = mirror_tokens(sq, ca, tu)
@@ -107,6 +118,25 @@ def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=
         ys.append(y.cpu())
     model.train()
     return (torch.cat(preds), torch.cat(ys)) if preds else (torch.zeros(0), torch.zeros(0))
+
+
+def load_data(path):
+    """The prepared arrays as {name: numpy array}, from an .npz or a packed folder."""
+    if not os.path.isdir(path):
+        return np.load(path)
+    with open(os.path.join(path, "meta.json")) as f:
+        meta = json.load(f)
+    n = meta["n"]
+    read = lambda name, dtype, shape: np.fromfile(os.path.join(path, f"{name}.bin"), dtype=dtype).reshape(shape)
+    return {"squares": read("squares", np.uint8, (n, 32)), "castling": read("castling", np.uint8, n),
+            "turn": read("turn", np.uint8, n), "eval": read("eval", np.float32, n),
+            "source": read("source", np.uint8, n), "source_names": np.array(meta["source_names"])}
+
+
+def batch_squares(squares, b, device):
+    """Square tokens long[B, 64] for indices b, unpacking packed (two per byte) storage."""
+    sq = squares[b].to(device, non_blocking=True)
+    return (unpack_squares(sq) if sq.shape[1] == 32 else sq).long()
 
 
 def resolve_precision(args, device):
@@ -149,7 +179,7 @@ def main():
     args.precision = resolve_precision(args, device)
     os.makedirs(args.out, exist_ok=True)
 
-    data = np.load(args.data)
+    data = load_data(args.data)
     total = len(data["eval"])
     n = total if args.limit is None else min(args.limit, total)
     # --limit takes a random sample, since the files are concatenated in order
@@ -160,7 +190,7 @@ def main():
     turn = torch.from_numpy(data["turn"][keep])
     if "source" not in data:
         raise SystemExit(f"{args.data} has no source tags; re-run `uv run python -m NoFeat.prepare_data`")
-    source = torch.from_numpy(data["source"][keep]).long()
+    source = torch.from_numpy(data["source"][keep])   # uint8: .long() only on subsets, to save RAM
     source_names = [str(x) for x in data["source_names"]]
     unknown = set(args.sources) - set(source_names)
     if unknown:
@@ -171,11 +201,17 @@ def main():
     else:
         targets = torch.from_numpy(np.clip(data["eval"][keep], -args.clip, args.clip) / args.scale).float()
 
-    perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed))
+    del data
+    # int32 indices halve the index arrays' memory on huge datasets (small ones keep
+    # int64 so their validation split matches earlier runs)
+    index_dtype = torch.int32 if n > 50_000_000 else torch.int64
+    perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed), dtype=index_dtype)
     n_val = max(1, int(n * args.val_frac))
     val_idx, train_idx = perm[:n_val], perm[n_val:]
-    train_idx = train_idx[use[source[train_idx]]]           # train only on the chosen sources
-    val_used = use[source[val_idx]]                          # val positions from those sources
+    del perm
+    train_idx = train_idx[use[source[train_idx].long()]]    # train only on the chosen sources
+    val_used = use[source[val_idx].long()]                   # val positions from those sources
+    val_subset = val_idx[val_used][:args.val_subset]         # for --val-every
     print(f"training on {', '.join(args.sources)}: {len(train_idx):,} train / "
           f"{val_used.sum().item():,} val (+{(~val_used).sum().item():,} val from other sources), "
           f"device {device}, {args.precision}")
@@ -198,7 +234,7 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_at)
     scaler = torch.amp.GradScaler(device.type, enabled=args.precision == "fp16")   # fp16 needs loss scaling
 
-    start_epoch, start_step, best_val, history = 1, 0, float("inf"), []
+    start_epoch, start_step, best_val, history, curve = 1, 0, float("inf"), [], []
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
@@ -208,6 +244,7 @@ def main():
             scaler.load_state_dict(ckpt["scaler_state_dict"])
         best_val = ckpt["best_val"]
         history = ckpt["history"]
+        curve = ckpt.get("curve", [])
         if ckpt.get("step") is not None:   # saved mid-epoch
             start_epoch, start_step = ckpt["epoch"], ckpt["step"]
             print(f"Resumed from {args.resume} (epoch {start_epoch}, step {start_step}/{steps_per_epoch})")
@@ -234,6 +271,7 @@ def main():
             "target_scale": unit_cp(args),   # model output * target_scale = centipawn-like score
             "best_val": best_val,
             "history": history,
+            "curve": curve,   # --val-every points
             "args": vars(args),
         }
 
@@ -250,7 +288,7 @@ def main():
     model.train()
     for epoch in range(start_epoch, args.epochs + 1):
         shuffle = torch.Generator().manual_seed(args.seed * 1000 + epoch)
-        order = train_idx[torch.randperm(len(train_idx), generator=shuffle)]
+        order = train_idx[torch.randperm(len(train_idx), generator=shuffle, dtype=index_dtype)]
         swap = torch.rand(len(order), generator=shuffle) < args.augment_prob   # same draw on resume
         first = start_step if epoch == start_epoch else 0
         running, t0 = 0.0, time.time()
@@ -258,7 +296,7 @@ def main():
                    initial=first, total=steps_per_epoch)
         for step in bar:
             b = order[step * args.batch_size:(step + 1) * args.batch_size]
-            sq = squares[b].to(device, non_blocking=True).long()
+            sq = batch_squares(squares, b, device)
             ca = castling[b].to(device, non_blocking=True).long()
             tu = turn[b].to(device, non_blocking=True).long()
             y = targets[b].to(device, non_blocking=True)
@@ -288,6 +326,20 @@ def main():
                 bar.set_postfix(loss=f"{running:.4f}", lr=f"{scheduler.get_last_lr()[0]:.1e}")
                 if args.wandb:
                     wandb.log({"train_loss": running, "lr": scheduler.get_last_lr()[0]})
+            if args.val_every and (step + 1) % args.val_every == 0 and step + 1 < steps_per_epoch:
+                sq_err, cp_err = val_metrics(*evaluate(model, squares, castling, turn, targets, val_subset,
+                                                       args, device), args)
+                sub_source = source[val_subset]
+                by_source = {name: cp_err[sub_source == i].mean().item()
+                             for i, name in enumerate(source_names) if (sub_source == i).any()}
+                curve.append({"epoch": epoch, "step": step + 1, "train_loss": running,
+                              "val_mse": sq_err.mean().item(), "val_mae_cp": cp_err.mean().item(),
+                              "val_mae_cp_by_source": by_source})
+                tqdm.write(f"step {step + 1}: train {running:.4f}  val subset MSE {curve[-1]['val_mse']:.4f}  "
+                           f"MAE {curve[-1]['val_mae_cp']:.0f} cp  ("
+                           + "  ".join(f"{k} {v:.0f}" for k, v in by_source.items()) + ")")
+                if args.wandb:
+                    wandb.log({"val_subset_mse": curve[-1]["val_mse"], "val_subset_mae_cp": curve[-1]["val_mae_cp"]})
             if args.save_every and (step + 1) % args.save_every == 0 and step + 1 < steps_per_epoch:
                 save(checkpoint(epoch, step + 1), "last.pt")
 
@@ -297,8 +349,9 @@ def main():
         val_mse = sq_err[val_used].mean().item()
         val_mae_cp = cp_err[val_used].mean().item()
         mirror_mae_cp = mirror_cp_err.mean().item()
-        by_source = {name: cp_err[source[val_idx] == i].mean().item()
-                     for i, name in enumerate(source_names) if (source[val_idx] == i).any()}
+        val_source = source[val_idx]
+        by_source = {name: cp_err[val_source == i].mean().item()
+                     for i, name in enumerate(source_names) if (val_source == i).any()}
         history.append({"epoch": epoch, "train_loss": running, "val_mse": val_mse, "val_mae_cp": val_mae_cp,
                         "val_mirror_mae_cp": mirror_mae_cp, "val_mae_cp_by_source": by_source})
         per_source = "  ".join(f"{k}{'' if k in args.sources else '*'} {v:.0f}" for k, v in by_source.items())

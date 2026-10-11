@@ -12,7 +12,13 @@ full_16m_preprocessed_chess_data.npz
 *.pyc
 *.pgn
 *.zip
-# resume checkpoints (with optimizer state); best.pt is what gets committed
+# Training checkpoints (with optimizer state) stay local. Models are shared as
+# model.safetensors + config.json (NoFeat/export.py); the older best.pt files are
+# already tracked and stay as they are.
 Models/Weights/*/last.pt
+Models/Weights/*/best.pt
 *.pt.tmp
 .venv
+# Exports of the older models (their best.pt is tracked); the newest is committed
+Models/Weights/*/model.safetensors
+!Models/Weights/SlackFishV-T2-W-Lichess-6.41M/model.safetensors
