@@ -61,3 +61,18 @@ def encode_fens(fens):
     for i, fen in enumerate(fens):
         squares[i], castling[i], turn[i] = encode_fen(fen)
     return squares, castling, turn
+
+
+def pack_squares(squares):
+    """uint8[N, 64] square tokens -> uint8[N, 32], two squares per byte (tokens fit
+    in 4 bits): byte i holds square 2i in its low nibble and 2i+1 in its high one."""
+    return squares[:, 0::2] | (squares[:, 1::2] << 4)
+
+
+def unpack_squares(packed):
+    """Inverse of pack_squares, for numpy arrays or torch tensors."""
+    low, high = packed & 15, packed >> 4
+    if isinstance(packed, np.ndarray):
+        return np.stack((low, high), axis=-1).reshape(len(packed), 64)
+    import torch
+    return torch.stack((low, high), dim=-1).reshape(packed.shape[0], 64)
