@@ -24,8 +24,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_BOOK = os.path.join(ROOT, "Models", "Books", "gm2001.bin")
 # Hugging Face model repo holding exported NoFeat models as <folder>/model.safetensors
 # + config.json (see NoFeat/export.py). A missing model is downloaded from here on
-# first use. None = local files only. SLACKFISH_HF_REPO overrides it.
-HF_REPO = os.environ.get("SLACKFISH_HF_REPO") or None
+# first use. SLACKFISH_HF_REPO overrides it; set it to "" for local files only.
+HF_REPO = os.environ.get("SLACKFISH_HF_REPO", "mathemagicianz/slackfish") or None
 for p in (ROOT, os.path.join(ROOT, "Models", "Training")):
     if p not in sys.path:
         sys.path.insert(0, p)
