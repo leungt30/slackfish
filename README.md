@@ -32,7 +32,7 @@ uv run python Engine/gui.py
 | **t2-w-all-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-All-6.41M/` | Yes: as t2-w, plus tactics, 8 epochs, val MAE games 142 / random 171 / tactics 356 cp |
 | **t2-w-lichess-6.41m** (default) | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-Lichess-6.41M/` | **Yes, strongest:** as t2-w, plus tactics and 393M Lichess positions, 1 epoch, val MAE games 114 / random 155 / tactics 293 cp. Scored 126/128 against t2-w; about 2255 Elo on Stockfish's scale at depth 3 |
 
-Each NoFeat folder holds `model.safetensors` + `config.json` (the inference export, see [Sharing models](#sharing-models)) and/or the training checkpoint `best.pt`; the bots use the export when it's there.
+Each NoFeat folder holds `model.safetensors` + `config.json` (the inference export, see [Sharing models](#sharing-models)) and/or the training checkpoint `best.pt`; the bots use the export when it's there, and download it from [Hugging Face](https://huggingface.co/mathemagicianz/slackfish) when neither is.
 
 V5 is the latest model described in `REPORT.md`. Its original checkpoint is lost, so it has to be retrained (see [Retraining V5](#retraining-v5)). Once a checkpoint exists at `Models/Weights/SlackFishCNN_V5_79`, or is passed with `--white-weights` / `--black-weights`, it plays with no code changes.
 
@@ -235,7 +235,7 @@ Training checkpoints (`best.pt`, `last.pt`) are ~77 MB, two thirds of which is o
 uv run python -m NoFeat.export --all     # every Models/Weights/*/best.pt -> model.safetensors + config.json
 ```
 
-`model.safetensors` holds only the weights (25.6 MB for the 6.41M models, 13 MB for 3.25M) and can't run code when loaded; `config.json` has the model class, size, score scale and a training summary. Evaluations are bit-identical to the checkpoint's. The bots load a folder's `model.safetensors` if present, else `best.pt`. If neither is there and `SLACKFISH_HF_REPO` names a Hugging Face model repo holding `<folder>/model.safetensors` + `config.json`, the model is downloaded on first use. Keep `last.pt` (gitignored) only if you want to resume training.
+`model.safetensors` holds only the weights (25.6 MB for the 6.41M models, 13 MB for 3.25M) and can't run code when loaded; `config.json` has the model class, size, score scale and a training summary. Evaluations are bit-identical to the checkpoint's. The bots load a folder's `model.safetensors` if present, else `best.pt`. If neither is there, the model is downloaded on first use from **[mathemagicianz/slackfish](https://huggingface.co/mathemagicianz/slackfish)** on Hugging Face, which hosts every NoFeat model as `<folder>/model.safetensors` + `config.json` (no login needed; set `SLACKFISH_HF_REPO` to use another repo, or to `""` for local files only). To publish a new model there, export it and upload its two files, e.g. `uv run hf upload mathemagicianz/slackfish Models/Weights/SlackFishV-T3 SlackFishV-T3 --include "model.safetensors" --include "config.json"` (needs `uv run hf auth login` with a write token). Keep `last.pt` (gitignored) only if you want to resume training.
 
 ## Experiments
 
