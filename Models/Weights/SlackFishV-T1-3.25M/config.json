@@ -1,0 +1,21 @@
+{
+  "model_class": "ChessTransformerV1",
+  "model_config": {
+    "d_model": 256,
+    "n_layers": 4,
+    "n_heads": 8,
+    "d_ff": 1024,
+    "dropout": 0.1
+  },
+  "target": "cp",
+  "target_scale": 500,
+  "target_clip": 1500,
+  "parameters": 3250689,
+  "training": {
+    "epochs": 10,
+    "sources": null,
+    "augment_prob": null,
+    "val_mae_cp": 142.5255727304372,
+    "val_mae_cp_by_source": null
+  }
+}

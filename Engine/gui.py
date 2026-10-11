@@ -1,7 +1,7 @@
 """
 Play against a SlackFish bot in the browser, or watch two bots play each other.
 
-    uv run python Engine/gui.py                         # opens http://localhost:8000
+    uv run python Engine/gui.py                         # opens http://localhost:8000, vs t2-w-lichess-6.41m:3
     uv run python Engine/gui.py --bot t1-alpha:2 --color black
     uv run python Engine/gui.py --color watch --bot t2-w-6.41m:3 --bot2 t1-3.25m:3 --delay 1
     uv run python Engine/gui.py --temperature 50         # vary the bot's moves
@@ -64,7 +64,7 @@ BOOKS_DIR = os.path.join(ROOT, "Models", "Books")
 
 
 def available_bots():
-    return [name for name, spec in BOTS.items() if os.path.exists(os.path.join(ROOT, spec.weights))]
+    return [name for name, spec in BOTS.items() if spec.available()]
 
 
 def available_books():
@@ -530,7 +530,7 @@ def make_handler(game: Game):
 
 def main():
     parser = argparse.ArgumentParser(description="Play SlackFish in the browser.")
-    parser.add_argument("--bot", default="t2-w-6.41m:2", help="bot name with optional :DEPTH")
+    parser.add_argument("--bot", default="t2-w-lichess-6.41m:3", help="bot name with optional :DEPTH")
     parser.add_argument("--color", choices=["white", "black", "watch"], default="white",
                         help="your colour, or watch: --bot (White) plays --bot2 (Black)")
     parser.add_argument("--bot2", help="watch mode: Black's bot as NAME[:DEPTH] (default: same as --bot)")

@@ -1,0 +1,28 @@
+{
+  "model_class": "ChessTransformerV2",
+  "model_config": {
+    "d_model": 256,
+    "n_layers": 8,
+    "n_heads": 16,
+    "d_ff": 1024,
+    "dropout": 0.1
+  },
+  "target": "winprob",
+  "target_scale": 400,
+  "target_clip": 1500,
+  "parameters": 6409729,
+  "training": {
+    "epochs": 8,
+    "sources": [
+      "games",
+      "random"
+    ],
+    "augment_prob": 0.5,
+    "val_mae_cp": 131.039794921875,
+    "val_mae_cp_by_source": {
+      "games": 128.25804138183594,
+      "random": 167.2550506591797,
+      "tactics": 630.3764038085938
+    }
+  }
+}
