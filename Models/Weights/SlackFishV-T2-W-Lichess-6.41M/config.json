@@ -1,0 +1,31 @@
+{
+  "model_class": "ChessTransformerV2",
+  "model_config": {
+    "d_model": 256,
+    "n_layers": 8,
+    "n_heads": 16,
+    "d_ff": 1024,
+    "dropout": 0.0
+  },
+  "target": "winprob",
+  "target_scale": 400,
+  "target_clip": 1500,
+  "parameters": 6409729,
+  "training": {
+    "epochs": 1,
+    "sources": [
+      "games",
+      "random",
+      "tactics",
+      "lichess"
+    ],
+    "augment_prob": 0.5,
+    "val_mae_cp": 106.40321350097656,
+    "val_mae_cp_by_source": {
+      "games": 113.94854736328125,
+      "random": 155.37205505371094,
+      "tactics": 292.556884765625,
+      "lichess": 104.79438018798828
+    }
+  }
+}
