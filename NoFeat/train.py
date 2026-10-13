@@ -79,13 +79,15 @@ def parse_args():
     p.add_argument("--wp-scale", type=float, default=400,
                    help="winprob target: win probability = sigmoid(cp / WP_SCALE)")
     p.add_argument("--arch", choices=list(MODELS), default="v1",
-                   help="model class from NoFeat/model.py (v1 = ChessTransformerV1, v2 = ChessTransformerV2)")
+                   help="model class from NoFeat/model.py (v1, v2, v3 = ChessTransformerV1, V2, V3)")
     # Size options default to the chosen class's own defaults
     p.add_argument("--d-model", type=int)
     p.add_argument("--layers", type=int)
     p.add_argument("--heads", type=int)
     p.add_argument("--d-ff", type=int)
     p.add_argument("--dropout", type=float)
+    p.add_argument("--spatial-bias", action="store_true",
+                   help="v3 only: learned per-head 66x66 attention bias in every layer")
     p.add_argument("--augment-prob", type=float, default=0.5,
                    help="chance each training position is colour-swapped (0 = off)")
     p.add_argument("--no-compile", dest="compile", action="store_false",
@@ -218,6 +220,10 @@ def main():
 
     overrides = {k: v for k, v in dict(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads,
                                        d_ff=args.d_ff, dropout=args.dropout).items() if v is not None}
+    if args.spatial_bias:
+        if args.arch != "v3":
+            raise SystemExit("--spatial-bias needs --arch v3")
+        overrides["spatial_bias"] = True
     model = MODELS[args.arch](**overrides).to(device)
     print(f"{type(model).__name__} {model.config}: {sum(p.numel() for p in model.parameters()):,} parameters")
 

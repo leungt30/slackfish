@@ -22,6 +22,7 @@ Models/Weights/*/best.pt
 # Exports of the older models (their best.pt is tracked); the newest is committed
 Models/Weights/*/model.safetensors
 !Models/Weights/SlackFishV-T2-W-Lichess-6.41M/model.safetensors
+!Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M/model.safetensors
 
 # Lichess bot token (Engine/lichess.py)
 .lichess_token
