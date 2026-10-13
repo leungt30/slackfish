@@ -66,12 +66,15 @@ uv run python Engine/gui.py --temperature 50              # sample moves instead
 uv run python Engine/gui.py --book                       # bots open from the gm2001 book (also a menu in the page)
 uv run python Engine/gui.py --device cpu                 # keep the GPU free, e.g. while training
 uv run python Engine/gui.py --no-ponder                # don't let the bot think on your time
+uv run python Engine/gui.py --bot-clock 10               # the bot gets 10 s for the whole game; you're untimed
 uv run python Engine/gui.py --fen "<fen>" --port 8080 --no-browser
 ```
 
 The board is [Chessground](https://github.com/lichess-org/chessground), lichess's board UI, loaded from jsDelivr (needs internet; GPL-3.0). You can drag or click pieces, and it shows legal-move dots, last move and check highlights, and a promotion picker. The side panel picks the bot (only bots whose weights exist are listed), the depth and your colour, and has an evaluation bar from the bot's last search, a move list, Undo, Flip and PGN download. When the game ends, **Save GIF** (animated replay of every move) and **Save PNG** (final position with the result) appear. Python runs the rules (python-chess) and the bot; `Engine/gui.html` only displays the state.
 
 While it's your turn the bot ponders: it searches your likely replies in the background, best-looking first. If you play one it has finished, it replies instantly; otherwise it searches as usual, starting from the positions it already scored. Pondering never changes which move the bot picks, only how fast.
+
+**Clocks.** *Your clock* and *Bot clock* in the page (or `--clock 5+3` in minutes and `--bot-clock 10+1` in seconds) are separate, so either side can be untimed: a 10-second bot clock against an untimed human is a good handicap. The clocks sit above and below the board, the bot's showing its budget for the current move while it thinks. A bot with a clock ignores its depth setting and manages its time (1/25 of what's left plus most of the increment per move, deepening until that's used), and the eval line shows the depth each move reached.
 
 **Sharing a game (e.g. with ngrok).** There is one shared game per server. Every open page sees the same board and updates live: the server pushes changes over Server-Sent Events (`/api/events`), so there's no polling and a viewer costs one long-lived connection. The bot runs on the server, so everyone sees "thinking…" and its reply. To let others watch or play remotely:
 
@@ -126,11 +129,28 @@ With `--book`, bots play from a Polyglot opening book until the position leaves 
 uv run python Engine/play.py --white t2-w-6.41m:2 --black t1-3.25m:2 --book --seed 7
 ```
 
+A much stronger book is [Cerebellum Light](https://zipproth.de/Brainfish/download/) (178 MB, every move chosen by Stockfish, CC BY-NC-SA 4.0, so not in the repo): download `Cerebellum_Light_3Merge_200916.7z` and put its `Cerebellum3Merge.bin` in `Models/Books/`. It covers common amateur mistakes too (7 of 10 tested, against 1 for gm2001), and its lines run 30+ plies, so use it with `--book-plies 30`.
+
+### On Lichess
+
+[slackfish-bot](https://lichess.org/@/slackfish-bot) plays on Lichess as a BOT account through `Engine/lichess.py`. Anyone can challenge it ([challenge link](https://lichess.org/?user=slackfish-bot#friend)) to standard chess with a 30 s to 30 min clock; it plays one game at a time and declines the rest with a reason. `scripts/lichess-bot.sh` runs it in the background:
+
+```bash
+scripts/lichess-bot.sh start                     # online, accepting challenges
+scripts/lichess-bot.sh blitz                     # also challenge other bots: 10 rated 3+2 games (alias: series)
+scripts/lichess-bot.sh bullet --games 20         # the same at 1+1, with bullet time settings
+scripts/lichess-bot.sh status                    # running? playing? (and the game link)
+scripts/lichess-bot.sh stop                      # once the current game ends (--now: right away)
+```
+
+On its clock it spends about 1/12 of its remaining time plus the increment per move (1/20 for clocks under 3 minutes, whoever started the game; `--moves-left N` overrides it), searching as deep as that allows, and ponders the opponent's 5 likeliest replies on their time. A pondered reply that reached the `:DEPTH` of `--bot` (5 in the script, 4 in its bullet preset) is played instantly. The header of `scripts/lichess-bot.sh` explains every setting and how to adjust it, written so another assistant can operate the bot. With 7 pieces or fewer it plays the perfect move from [Lichess's endgame tablebase](https://tablebase.lichess.ovh) instead of searching, so won endings get converted (the search alone once shuffled checks with king and queen until a threefold repetition). It accepts a draw offer only when its own evaluation is under +0.10, and resumes a game in progress after a restart or a dropped connection. `--stockfish 1,2,3` challenges Lichess's own Stockfish levels instead (always casual). Setup (a new account, its token in `.lichess_token`, and `lichess.py upgrade`) is in the docstring of `Engine/lichess.py`.
+
 ### Search depth
 
 - **Depth 1** scores every legal move with the model and plays the best one. This is how the original scripts played.
 - **Depth 2+** runs minimax with alpha-beta pruning. Checkmate, stalemate, insufficient material, the 50-move rule and threefold repetition are scored exactly rather than by the model. Faster mates score higher.
 - All positions at the last ply are evaluated in one batched forward pass per node.
+- On top of plain alpha-beta: principal variation search, null-move pruning, late move reductions, killer and history move ordering, and check extensions (see `Bot._search`). Together they made depth 4 about 4.7x faster with the same moves, and at 9 s per move the bot now avoids 9 of the 11 blunders that lost it games on Lichess, against 2 before (`Engine/searchbench.py`, which also runs the Win At Chess tactics).
 
 Rough speed for v2 on an RTX 500 laptop GPU in the opening: depth 1 is instant, depth 2 about 0.1s, and depth 3 about 1.5–3s per move. Each extra ply multiplies the cost by roughly the number of legal moves. Feature engineering (`featureEng.py`) is the bottleneck, not the network.
 
@@ -348,6 +368,25 @@ T2-W-Lichess at depth 3 against each level:
 
 At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It still scored 44% against the strongest level tested, so the top of its range isn't pinned down. Depth 3 adds roughly 300 Elo, though part of that gap is Stockfish getting 1 s instead of 0.5 s. A depth-3 move takes a median 0.73 s (1.7 s at most) on the desktop.
 
+### Lichess bot results
+
+[slackfish-bot](https://lichess.org/@/slackfish-bot) (t2-w-lichess-6.41m, opening book, timed search with pondering) played rated games against other Lichess bots in October 2026. "Original" is the alpha-beta search before PVS / null move / LMR, "pruned" after.
+
+| Time control | Search | Games | W / D / L | Score | Opponents (avg, range) |
+|---|---|---|---|---|---|
+| Blitz 3+2 | original | 10 | 4 / 0 / 6 | 40% | 1961 (1615–2254) |
+| Blitz 3+2 | pruned | 22 | 5 / 6 / 11 | 36% | 2189 (2009–2306) |
+| Bullet 1+1 | original | 12 | 6 / 1 / 5 | 54% | 2069 (1748–2297) |
+| Bullet 1+1 | pruned | 39 | 19 / 5 / 15 | 55% | 2019 (1738–2386) |
+
+Ratings after 83 games: blitz 2044, bullet 2066 (bot-pool ratings, not comparable to human ones). One blitz loss was on time with 253 s left, from a dropped connection when sending a move (the bridge now retries and reconnects).
+
+- **Where the losses went wrong** (each of 10 losses replayed with Stockfish 19; "decisive" = after it, SlackFish never got back to an even game): no mistakes in the opening, 6 decisive mistakes in the middlegame, 4 in the endgame. Several were sacrifices or captures (Bxf7+, Bxh3, Rxd2) that look good 3 plies deep, with the refutation just past the horizon. Just before, it was level or better in 7 of the 10 (within 0.3 pawns, or ahead by up to 1.8).
+- **Losses weren't repeats.** No two losses to the same opponent with the same colours shared even a first move: the book's sampling varies the openings. Wins against deterministic opponents did repeat (three games as White vs turkjs share 19–23 plies).
+- **Clock use.** Lichess charged ~0.2 s per move beyond the bot's own thinking. With 1/25 of the clock per move it finished 3+2 games with 160–265 s left while opponents ran low (it couldn't use the time: depth 4 didn't fit, depth 3 took ~1 s); `Engine/lichess.py` now spends 1/12 (1/20 under 3 minutes), and in bullet it still finishes with 28–68 s against the opponents' 4–47.
+- **Opening books.** Of 10 common amateur mistakes (Damiano 2...f6, the wayward queen, Englund gambit, Blackburne Shilling...), gm2001 has the punishing reply for 1 and Cerebellum Light for 7; the other 3 (Scholar's mate, Legal's trap, the elephant trap) are short tactics the search finds anyway.
+- **Practicalities.** Lichess limits each bot to 100 games a day against other bots, and many bots decline bot challenges, so a challenge list needs 15–20 names to keep a series going.
+
 ### Hardware and speed
 
 | Experiment | Result |
@@ -376,6 +415,12 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 | New search vs old, equal depth (d2 vs d2) | 9.5 / 16 (6 / 7 / 3), about +65 Elo, at 1.5× the time per move |
 | New search vs old one ply deeper (d2 vs d3) | 5 / 16 (2 / 6 / 8). One more full ply still wins, but the old search used 4× the time per move. |
 | **New search vs old, equal time (d3 vs d3, 1.30 vs 1.27 s per move)** | **11 / 16 (8 / 6 / 2), about +135 Elo** |
+| **float16 weights instead of autocast** | 1.3–1.45× faster (3,064 → 3,831 positions/s at batch 20, 3,628 → 5,254 at 256) and closer to float32 (0.11 cp mean error vs 0.17). Autocast turns off `nn.TransformerEncoder`'s fused inference path; float16 weights don't. bfloat16 weights were as fast but 10× less accurate (1.06 cp); `torch.compile` and CUDA graphs added nothing on top. |
+| **Profiling again** (float16, depth 3) | 94–96% of a search is the network, and 512-position batches take 16× as long as 32-position ones: the GPU is saturated even by the search's small batches. So searching in a faster language would save ~5%, and two parallel searches each run at half speed. |
+| **Iteration cost** (a timed search deepening to depth 5–6) | Uneven between odd and even depths: depth 3 → 4 cost 15–18× in middlegames, 2 → 3 only 1–2.5×. A time manager that assumed "like the last step" started depth 4 with ~7 s of a 9 s budget left and threw it away unfinished; predicting each step from the same step two depths back (with per-depth minimums) cut middlegame moves from 8.7 s to ~1 s at the same depth. |
+| **PVS, null move, LMR, killer/history ordering, check extensions** (`Bot._search`) | Depth 4 on four positions: 73.4 s → 15.6 s (171k → 33k evals), identical moves. With null move and LMR from depth 3 instead of 2 it was only 33.2 s, and no better than the old search under a time limit. |
+| **The same, on test positions** (`Engine/searchbench.py`) | The 11 decisive blunders from slackfish-bot's Lichess losses, at 9 s per move: 2 avoided by the old search, 9 by the new one (mean depth 3.33 → 4.08); at 3 s: 2 → 5. Win At Chess (first 100): 82 → 86 solved at depth 3, in less time; 84 → 88 at 3 s per move. Depth 4 alone fixes 10 of the 11, so these were horizon mistakes. |
+| **Endgame conversion** (K+Q+P vs K+P, mate in 10, drawn by threefold repetition on Lichess) | The search scored repetition as a draw only on the third occurrence, and transposition-table entries from earlier said "winning", so it let the opponent repeat. Scoring a second occurrence as a draw, it mates a random defender in 55 moves; with Lichess tablebase moves (7 pieces or fewer), in 7. |
 
 ### What we learned
 
@@ -520,13 +565,18 @@ The main metric was mean squared error against Stockfish evaluations. For qualit
 
 ## Known Limitations
 
-- Endgame evaluation is less reliable.
-- Checkmate sequences are hard for the evaluator alone. Searching at depth 2+ helps because mates are scored exactly.
-- Move selection is deterministic, so bot-vs-bot games between the same bots always repeat.
-- FEN inputs don't encode game history, so the model can't learn to avoid repetition. The search handles threefold repetition as a draw.
+- **Search depth.** The network runs at ~5,000 positions/s on the laptop GPU, so the search reaches about depth 3 in 1 s, 4 in 1-5 s and 5 in 5-20 s. Tactics deeper than that still get missed, and in bullet it plays mostly depth 3-4. Raising the speed would mean a faster model or a policy head to search fewer moves (as Leela does).
+- **Endgames with more than 7 pieces.** With 7 or fewer, the Lichess bot plays tablebase moves (`Engine/lichess.py`); the browser GUI and terminal scripts don't. Above that, a won position is just "very good" to the network everywhere, so nothing pushes the search toward progress, and it can drift toward the 50-move rule.
+- **No game history in the model.** FEN inputs don't encode history, so the network can't see repetitions; the search scores any repeated position as a draw (from its second occurrence) instead.
+- **Openings repeat without a book.** At temperature 0 the same position always gets the same move, so two book-less bots replay the same game. `--book` (sampled moves) or `--temperature` vary it.
+- **Ratings are against bots.** slackfish-bot's Lichess ratings (blitz about 2040 after 21 games, provisional bullet about 2100) come from games against other bots, so they don't map onto human ratings.
 - v1 and v2 are weak in practice. They often play odd moves like `f6`, `h6` or `Rh7` in the opening.
 
-Future improvements suggested in the report include endgame-specific features, a dedicated endgame model, stronger checkmate-oriented features, and adjusted mate-score scaling.
+Future improvements suggested in the report include endgame-specific features, a dedicated endgame model, stronger checkmate-oriented features, and adjusted mate-score scaling. Since then:
+
+- **Positional information in the transformer.** NoFeat's models only add a learned absolute embedding per square at the input, so board geometry (ranks, files, diagonals, knight jumps) has to be learned from data. Cheapest first: rank + file embeddings; a learned 64×64 square-pair attention bias per layer (as in Leela Chess Zero's transformers, whose "smolgen" makes it position-dependent); or encoding the board from the side to move. All need retraining.
+- **A policy head and MCTS.** The Lichess evaluation database has Stockfish's best move for every position, so a move-prediction head could be trained from data already used. A policy lets a search (Lc0-style PUCT) look only at promising moves, which matters when the network, not the search, is the bottleneck.
+- **Progress in won positions with 8+ pieces.** Scaling the evaluation toward 0 as the 50-move counter rises would make the search prefer captures and pawn moves instead of drifting.
 
 ## References
 

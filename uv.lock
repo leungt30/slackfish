@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1849,6 +1849,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pillow" },
     { name = "python-chess" },
+    { name = "requests" },
     { name = "safetensors" },
     { name = "scikit-learn" },
     { name = "torch" },
@@ -1867,6 +1868,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "python-chess", specifier = ">=1.999" },
+    { name = "requests", specifier = ">=2.34.2" },
     { name = "safetensors", specifier = ">=0.8.0" },
     { name = "scikit-learn", specifier = ">=1.9.1" },
     { name = "torch", specifier = ">=2.14.1" },
