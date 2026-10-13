@@ -34,15 +34,18 @@ class NoFeatEvaluator:
         cls = getattr(models, config.get("model_class", "ChessTransformerV1"))   # older checkpoints are V1
         self.model = cls(**config["model_config"]).to(self.device)
         self.model.load_state_dict(state)
+        # float16 weights on GPU, not autocast: autocast turns off nn.TransformerEncoder's
+        # fused inference path, so this is ~1.3-1.45x faster, and closer to float32
+        # (0.11 cp mean error vs 0.17). bfloat16 is as fast but ~10x less accurate.
+        if self.device.type == "cuda":
+            self.model.half()
         self.model.eval()
         self.scale = config["target_scale"]
 
     @torch.no_grad()
     def evaluate(self, boards: list[chess.Board]) -> np.ndarray:
         squares, castling, turn = encode_fens([b.fen() for b in boards])
-        # float16 on GPU: ~2.6x faster than float32, scores within ~1 cp on average
-        with torch.autocast(self.device.type, dtype=torch.float16, enabled=self.device.type == "cuda"):
-            pred = self.model(torch.from_numpy(squares).to(self.device).long(),
-                              torch.from_numpy(castling).to(self.device).long(),
-                              torch.from_numpy(turn).to(self.device).long())
+        pred = self.model(torch.from_numpy(squares).to(self.device).long(),
+                          torch.from_numpy(castling).to(self.device).long(),
+                          torch.from_numpy(turn).to(self.device).long())
         return pred.float().cpu().numpy() * self.scale

@@ -22,3 +22,11 @@ Models/Weights/*/best.pt
 # Exports of the older models (their best.pt is tracked); the newest is committed
 Models/Weights/*/model.safetensors
 !Models/Weights/SlackFishV-T2-W-Lichess-6.41M/model.safetensors
+
+# Lichess bot token (Engine/lichess.py)
+.lichess_token
+# Cerebellum Light (zipproth.de/Brainfish, CC BY-NC-SA 4.0): 178 MB, download it separately
+Models/Books/Cerebellum3Merge.bin
+!Engine/data/
+# Server and bot output (Engine/gui.py, Engine/lichess.py)
+logs/
