@@ -34,7 +34,7 @@ uv run python Engine/gui.py
 | **t3-w-lichess-14.4m** | `NoFeat/model.py` (`ChessTransformerV3`) | `Models/Weights/SlackFishV-T3-W-Lichess-14.4M/` (local only) | Yes: as t2-w-lichess but 14.4M params (width 384, 8 heads), val MAE games 114 / random 156 / tactics 288 cp. Scored 56.5/128 against t2-w-lichess (about −41 Elo) and evaluates ~1.6× slower |
 | **t2-sb-w-lichess-6.97m** (default) | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M/` | **Yes, strongest:** t2-w-lichess plus a learned per-head 66×66 attention bias, same data and settings, val MAE games 113 / random 152 / tactics 280 cp. Scored 68/128 against t2-w-lichess (about +22 Elo) |
 
-Each NoFeat folder holds `model.safetensors` + `config.json` (the inference export, see [Sharing models](#sharing-models)) and/or the training checkpoint `best.pt`; the bots use the export when it's there, and download it from [Hugging Face](https://huggingface.co/mathemagicianz/slackfish) when neither is.
+NoFeat model weights aren't stored in git: each folder in the repo holds only `config.json`, and the weights (`model.safetensors`) are downloaded from [Hugging Face](https://huggingface.co/mathemagicianz/slackfish) on first use (about 28 MB for the default bot). A local `model.safetensors`, or a training checkpoint `best.pt`, is used instead when present. See [Sharing models](#sharing-models).
 
 V5 is the latest model described in `REPORT.md`. Its original checkpoint is lost, so it has to be retrained (see [Retraining V5](#retraining-v5)). Once a checkpoint exists at `Models/Weights/SlackFishCNN_V5_79`, or is passed with `--white-weights` / `--black-weights`, it plays with no code changes.
 
@@ -262,7 +262,7 @@ Training checkpoints (`best.pt`, `last.pt`) are ~77 MB, two thirds of which is o
 uv run python -m NoFeat.export --all     # every Models/Weights/*/best.pt -> model.safetensors + config.json
 ```
 
-`model.safetensors` holds only the weights (25.6 MB for the 6.41M models, 13 MB for 3.25M) and can't run code when loaded; `config.json` has the model class, size, score scale and a training summary. Evaluations are bit-identical to the checkpoint's. The bots load a folder's `model.safetensors` if present, else `best.pt`. If neither is there, the model is downloaded on first use from **[mathemagicianz/slackfish](https://huggingface.co/mathemagicianz/slackfish)** on Hugging Face, which hosts every NoFeat model as `<folder>/model.safetensors` + `config.json` (no login needed; set `SLACKFISH_HF_REPO` to use another repo, or to `""` for local files only). To publish a new model there, export it and upload its two files, e.g. `uv run hf upload mathemagicianz/slackfish Models/Weights/SlackFishV-T3 SlackFishV-T3 --include "model.safetensors" --include "config.json"` (needs `uv run hf auth login` with a write token). Keep `last.pt` (gitignored) only if you want to resume training.
+`model.safetensors` holds only the weights (25.6 MB for the 6.41M models, 13 MB for 3.25M) and can't run code when loaded; `config.json` has the model class, size, score scale and a training summary. Evaluations are bit-identical to the checkpoint's. The bots load a folder's `model.safetensors` if present, else `best.pt`. If neither is there, the model is downloaded on first use from **[mathemagicianz/slackfish](https://huggingface.co/mathemagicianz/slackfish)** on Hugging Face, which hosts every NoFeat model as `<folder>/model.safetensors` + `config.json` (no login needed; set `SLACKFISH_HF_REPO` to use another repo, or to `""` for local files only). To publish a new model there, export it and upload its two files, e.g. `uv run hf upload mathemagicianz/slackfish Models/Weights/SlackFishV-T3 SlackFishV-T3 --include "model.safetensors" --include "config.json"` (needs `uv run hf auth login` with a write token). Weights are gitignored (`best.pt`, `last.pt`, `model.safetensors`): publish them to Hugging Face, not git. Only `config.json` is committed, and a model needs its `BOTS` entry in `Engine/bots.py` and its files on Hugging Face to be playable from a fresh clone. Keep `last.pt` only if you want to resume training.
 
 ## Experiments
 
@@ -503,7 +503,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 ├── Models/
 │   ├── Scalers/             # scaler_X.pkl, scaler_Y.pkl (v1/v2), scaler_Y_9M.pkl (v5)
 │   ├── Training/            # Model definitions and training scripts
-│   ├── Weights/             # Model checkpoints and exports, one folder per NoFeat model
+│   ├── Weights/             # CNN weights; one folder per NoFeat model (config.json, weights from Hugging Face)
 │   └── Books/               # Polyglot opening books (gm2001.bin)
 ├── data/                    # Raw CSVs, not committed (gitignored)
 ├── featureEng.py            # FEN-to-feature engineering
