@@ -30,8 +30,9 @@
     display: flex; gap: 20px; justify-content: center; align-items: flex-start;
     padding: 20px 16px; flex-wrap: wrap;
   }
-  .board-col { display: flex; gap: 10px; }
-  #board { width: min(78vh, calc(100vw - 64px)); height: min(78vh, calc(100vw - 64px)); }
+  .board-wrap { display: flex; flex-direction: column; gap: 8px; }
+  .board-col { display: flex; gap: 10px; order: 1; }
+  #board { width: min(calc(100vh - 190px), calc(100vw - 64px)); height: min(calc(100vh - 190px), calc(100vw - 64px)); }
   .evalbar {
     width: 18px; border-radius: 4px; overflow: hidden; position: relative;
     background: var(--bar-black); border: 1px solid var(--border);
@@ -50,15 +51,28 @@
     width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
   }
+  /* Clocks sit above and below the board (the bot's at the top unless flipped) */
   .clock {
-    display: flex; justify-content: space-between; align-items: baseline;
-    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg);
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    margin-left: 28px;   /* line up with the board, past the eval bar */
+    padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
+    height: 60px;   /* fixed, so a clock's contents never shift the board */
+    transition: background .15s, border-color .15s;
   }
-  .clock .who { font-size: 12px; color: var(--muted); }
-  .clock .time { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+  .clock .label { min-width: 0; }
+  .clock .who { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .clock .sub { font-size: 12px; color: var(--muted); min-height: 1.3em; font-variant-numeric: tabular-nums; }
+  .clock .time {
+    font-size: 36px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .5px;
+    line-height: 1.15; padding: 0 10px; border-radius: 6px;
+  }
   .clock.running { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .clock.running .time { background: var(--accent); color: var(--accent-text); }
+  .clock.untimed .time, .clock.untimed.running .time { color: var(--muted); background: none; font-size: 20px; font-weight: 500; }
   .clock.low .time { color: var(--low); }
+  .clock.low.running .time { background: var(--low); color: #fff; }
   .clock.flagged .time { color: var(--low); }
+  @media (max-width: 600px) { .clock .time { font-size: 28px; } }
   select, button {
     width: 100%; font: inherit; padding: 7px 9px; border-radius: 6px;
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
@@ -94,9 +108,19 @@
 </head>
 <body>
 <main>
-  <div class="board-col">
-    <div class="evalbar" id="evalbar"><div class="white" id="evalwhite" style="height:50%"></div></div>
-    <div id="board" class="cg-wrap"></div>
+  <div class="board-wrap">
+    <div class="clock" id="clock-bot" hidden>
+      <div class="label"><div class="who">Bot</div><div class="sub"></div></div>
+      <span class="time">5:00</span>
+    </div>
+    <div class="board-col">
+      <div class="evalbar" id="evalbar"><div class="white" id="evalwhite" style="height:50%"></div></div>
+      <div id="board" class="cg-wrap"></div>
+    </div>
+    <div class="clock" id="clock-you" hidden>
+      <div class="label"><div class="who">You</div><div class="sub"></div></div>
+      <span class="time">5:00</span>
+    </div>
   </div>
 
   <div class="panel">
@@ -137,7 +161,7 @@
         <select id="book"></select></div>
     </div>
     <div class="row" id="tcrow">
-      <div><label for="tc" title="You and the bot each get this time control. Running out loses.">Clock</label>
+      <div><label for="tc" title="Your time control. Running out loses.">Your clock</label>
         <select id="tc">
           <option value="none">No clock</option>
           <option value="1+0">1 + 0 (bullet)</option>
@@ -152,10 +176,26 @@
           <option value="30+0">30 + 0 (classical)</option>
           <option value="custom">Custom…</option>
         </select></div>
+      <div><label for="btc" title="The bot's time for the whole game, in seconds. With a clock the bot searches as deep as its time allows, spending about 1/25 of what's left per move. Thinking on your time is free, and if it already searched your move to Depth while you thought, it replies instantly without using its clock.">Bot clock</label>
+        <select id="btc">
+          <option value="none">No clock (fixed depth)</option>
+          <option value="5+0">5 s</option>
+          <option value="10+0">10 s</option>
+          <option value="30+0">30 s</option>
+          <option value="60+0">1 min</option>
+          <option value="180+0">3 min</option>
+          <option value="300+0">5 min</option>
+          <option value="10+1">10 s + 1</option>
+          <option value="custom">Custom…</option>
+        </select></div>
     </div>
     <div class="row" id="tccustom" hidden>
-      <div><label for="tcmin">Minutes</label><input type="number" id="tcmin" min="0.25" max="180" step="0.25" value="5"></div>
+      <div><label for="tcmin">Your minutes</label><input type="number" id="tcmin" min="0.25" max="180" step="0.25" value="5"></div>
       <div><label for="tcinc">Increment (s)</label><input type="number" id="tcinc" min="0" max="300" step="1" value="0"></div>
+    </div>
+    <div class="row" id="btccustom" hidden>
+      <div><label for="btcsec">Bot seconds</label><input type="number" id="btcsec" min="1" max="10800" step="1" value="10"></div>
+      <div><label for="btcinc">Increment (s)</label><input type="number" id="btcinc" min="0" max="300" step="0.5" value="0"></div>
     </div>
     <div class="row" id="delayrow" hidden>
       <div><label for="delay">Time per move (at least)</label>
@@ -168,14 +208,6 @@
         </select></div>
     </div>
     <button class="primary" id="new">New game</button>
-    <div class="clock" id="clock-bot" hidden>
-      <span class="who">Bot</span>
-      <span class="time">5:00</span>
-    </div>
-    <div class="clock" id="clock-you" hidden>
-      <span class="who">You</span>
-      <span class="time">5:00</span>
-    </div>
     <div>
       <div id="status"></div>
       <div id="evaltext"></div>
@@ -225,6 +257,7 @@ function updateModeUI() {
   $("cfgB").hidden = !watch;
   $("tcrow").hidden = watch;
   $("tccustom").hidden = watch || $("tc").value !== "custom";
+  $("btccustom").hidden = watch || $("btc").value !== "custom";
   $("delayrow").hidden = !watch;
 }
 $("mode").onchange = updateModeUI;
@@ -237,6 +270,12 @@ const cg = Chessground($("board"), {
   movable: { free: false, showDests: true, events: { after: onUserMove } },
   highlight: { lastMove: true, check: true },
 });
+// Chessground caches the board's screen position and only re-measures on scroll
+// or window resize. The clocks above the board can appear, hide or swap and move
+// it, which would make clicks land a rank off. So have it re-measure (its scroll
+// handler clears the cache) right before each press, ahead of its own handler.
+for (const ev of ["mousedown", "touchstart"])
+  $("board").addEventListener(ev, () => document.dispatchEvent(new Event("scroll")), { capture: true, passive: true });
 
 async function api(path, body) {
   const res = await fetch(path, body === undefined ? {} : {
@@ -278,7 +317,8 @@ function render(s) {
     else if (watching) status = `${label(s[winner], winner === "white" ? "White" : "Black")} wins by ${s.reason}`;
     else status = `${winner === s.humanColor ? "You win" : `${botSpec.name} wins`} by ${s.reason}`;
   } else if (thinking) {
-    status = `<span class="spin"></span>${watching ? label(s[s.turn], s.turn === "white" ? "White" : "Black") : s.thinkingBot} is thinking…`;
+    status = `<span class="spin"></span>${watching ? label(s[s.turn], s.turn === "white" ? "White" : "Black") : s.thinkingBot} is thinking…`
+      + (s.thinkLeft !== null && s.thinkLeft !== undefined ? ` <span id="thinkleft" style="color: var(--muted)"></span>` : "");
   } else if (watching && s.paused) {
     status = "Paused";
   } else {
@@ -286,6 +326,7 @@ function render(s) {
       + (s.pondering ? ` <span style="color: var(--muted)">· ${botSpec.name} is thinking on your time</span>` : "") : "";
   }
   $("status").innerHTML = status;
+  renderThinkLeft();
 
   // Eval (White's perspective, centipawns)
   if (s.evalBook) {
@@ -298,7 +339,8 @@ function render(s) {
     const mate = Math.abs(s.eval) > 90000;
     $("evaltext").textContent = `${s.evalBy} eval: ` + (mate
       ? (s.eval > 0 ? "White mates" : "Black mates")
-      : `${s.eval >= 0 ? "+" : ""}${(s.eval / 100).toFixed(2)}`);
+      : `${s.eval >= 0 ? "+" : ""}${(s.eval / 100).toFixed(2)}`)
+      + (s.evalDepth ? ` (depth ${s.evalDepth})` : "");
     const pct = 100 / (1 + Math.exp(-s.eval / 400));
     $("evalwhite").style.height = `${Math.max(3, Math.min(97, pct))}%`;
   }
@@ -327,12 +369,17 @@ function syncControls(s) {
   if (s.humanColor === null) $("delay").value = String(s.delay);
   $("book").innerHTML = `<option value="">Off</option>` + (s.books || []).map((b) => `<option>${b}</option>`).join("");
   $("book").value = s.book || "";
-  // Show the current game's time control in the settings
-  const c = s.clock;
-  const tc = c ? `${+(c.base / 60).toFixed(2)}+${+c.increment.toFixed(2)}` : "none";
-  const preset = [...$("tc").options].some((o) => o.value === tc);
-  $("tc").value = preset ? tc : "custom";
-  if (!preset && c) { $("tcmin").value = +(c.base / 60).toFixed(2); $("tcinc").value = c.increment; }
+  // Show the current game's time controls in the settings
+  if (s.humanColor) {
+    const controls = s.clock ? s.clock.controls : {};
+    const you = controls[s.humanColor], bot = controls[s.humanColor === "white" ? "black" : "white"];
+    const tc = you ? `${+(you.base / 60).toFixed(2)}+${+you.increment.toFixed(2)}` : "none";
+    $("tc").value = [...$("tc").options].some((o) => o.value === tc) ? tc : "custom";
+    if ($("tc").value === "custom") { $("tcmin").value = +(you.base / 60).toFixed(2); $("tcinc").value = you.increment; }
+    const btc = bot ? `${+bot.base.toFixed(2)}+${+bot.increment.toFixed(2)}` : "none";
+    $("btc").value = [...$("btc").options].some((o) => o.value === btc) ? btc : "custom";
+    if ($("btc").value === "custom") { $("btcsec").value = +bot.base.toFixed(2); $("btcinc").value = bot.increment; }
+  }
   updateModeUI();
 }
 
@@ -348,30 +395,63 @@ function formatClock(t) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 function renderClock() {
+  // Shown when either side has a clock; an untimed side shows "No clock" so both stay visible
   const c = state && state.humanColor && state.clock;
+  const youAtBottom = !state || orientation === (state.humanColor || "white");
   for (const who of ["bot", "you"]) {
     const el = $("clock-" + who);
     el.hidden = !c;
     if (!c) continue;
+    el.style.order = (who === "you") === youAtBottom ? 2 : 0;   // below / above the board
     const color = who === "you" ? state.humanColor : state.humanColor === "white" ? "black" : "white";
+    const control = c.controls[color];   // null: that side is untimed
     const running = c.running === color;
+    const thinking = who === "bot" && state.thinking;
+    el.querySelector(".who").textContent = who === "you" ? "You" : (state.white || state.black).name;
+    const sub = el.querySelector(".sub");
+    el.classList.toggle("untimed", !control);
+    el.classList.toggle("running", running || (!control && (thinking || (who === "you" && state.turn === color && !state.gameOver))));
+    if (!control) {
+      el.querySelector(".time").textContent = "No clock";
+      sub.textContent = thinking ? "Thinking…" : el.classList.contains("running") ? "Your move" : "";
+      el.classList.remove("low", "flagged");
+      continue;
+    }
     const t = Math.max(0, c[color] - (running ? (performance.now() - clockAt) / 1000 : 0));
     el.querySelector(".time").textContent = formatClock(t);
-    const name = who === "you" ? "You" : (state.white || state.black).name;
     const moved = state.history.filter((m, i) => m !== "…" && (i % 2 === 0) === (color === "white")).length > 0;
-    const waiting = !moved && !state.gameOver;
-    el.querySelector(".who").textContent = name + (waiting ? " · starts after first move"
-      : c.increment ? ` · +${+c.increment.toFixed(2)}s per move` : "");
-    el.classList.toggle("running", running);
-    el.classList.toggle("low", t < 10 && t > 0);
+    const inc = control.increment ? `+${+control.increment.toFixed(2)}s per move` : "";
+    if (thinking && state.thinkLeft !== null && state.thinkLeft !== undefined) {
+      const left = Math.max(0, state.thinkLeft - (performance.now() - clockAt) / 1000);
+      sub.textContent = `Thinking · ${left.toFixed(1)}s for this move`;
+    } else if (!moved && !state.gameOver) {
+      sub.textContent = "Starts after first move";
+    } else if (who === "bot" && state.pondering) {
+      sub.textContent = "Thinking on your time (free)" + (inc ? ` · ${inc}` : "");
+    } else {
+      sub.textContent = inc;
+    }
+    el.classList.toggle("low", t > 0 && t < Math.min(10, control.base * 0.2));
     el.classList.toggle("flagged", state.flagged && t <= 0);
   }
 }
-setInterval(() => { if (state && state.clock && state.clock.running) renderClock(); }, 100);
+setInterval(() => { if (state && state.clock && (state.clock.running || state.thinking)) renderClock(); }, 100);
+// A timed bot's budget for this move, counting down like the clock
+function renderThinkLeft() {
+  const el = $("thinkleft");
+  if (el && state && state.thinkLeft !== null)
+    el.textContent = `· ${Math.max(0, state.thinkLeft - (performance.now() - clockAt) / 1000).toFixed(1)}s for this move`;
+}
+setInterval(renderThinkLeft, 100);
 $("tc").onchange = updateModeUI;
+$("btc").onchange = updateModeUI;
 function clockSetting() {
   const v = $("tc").value;
   return v === "custom" ? `${$("tcmin").value}+${$("tcinc").value || 0}` : v;
+}
+function botClockSetting() {
+  const v = $("btc").value;
+  return v === "custom" ? `${$("btcsec").value}+${$("btcinc").value || 0}` : v;
 }
 
 // Apply a state from the server (POST response or the live event stream).
@@ -384,7 +464,7 @@ function update(s) {
   const first = state === null;
   if (first || s.humanColor !== state.humanColor) orientation = s.humanColor || "white";
   const settings = (x) => JSON.stringify([x.white, x.black, x.humanColor, x.delay, x.book,
-                                          x.clock && x.clock.base, x.clock && x.clock.increment]);
+                                          x.clock && x.clock.controls]);
   if (first || settings(s) !== settings(state)) syncControls(s);
   syncClock(s);
   render(s);
@@ -435,8 +515,8 @@ $("new").onclick = async () => {
   orientation = mode === "watch" ? "white" : mode;
   const book = $("book").value || null;
   const body = mode === "watch" ? { white: readBot("A"), black: readBot("B"), delay: $("delay").value }
-             : mode === "white" ? { white: null, black: readBot("A"), clock: clockSetting() }
-             : { white: readBot("A"), black: null, clock: clockSetting() };
+             : mode === "white" ? { white: null, black: readBot("A"), clock: clockSetting(), botClock: botClockSetting() }
+             : { white: readBot("A"), black: null, clock: clockSetting(), botClock: botClockSetting() };
   $("status").innerHTML = `<span class="spin"></span>Loading…`;
   try {
     update(await api("/api/new", { ...body, book }));

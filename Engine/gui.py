@@ -7,6 +7,7 @@ Play against a SlackFish bot in the browser, or watch two bots play each other.
     uv run python Engine/gui.py --temperature 50         # vary the bot's moves
     uv run python Engine/gui.py --book                   # open from Models/Books/gm2001.bin
     uv run python Engine/gui.py --quiescence 0          # turn off quiescence search
+    uv run python Engine/gui.py --bot-clock 10          # the bot gets 10 s for the whole game, you're untimed
     uv run python Engine/gui.py --no-ponder             # don't think on the human's time
     uv run python Engine/gui.py --device cpu --port 8080 --no-browser
 
@@ -26,18 +27,27 @@ Opening book (--book, or the page's Opening book menu): bots play moves from a
 Polyglot .bin book in Models/Books, sampled by how often each was played, until
 the game leaves the book or reaches --book-plies plies, then search as usual.
 
-Optional clock (--clock 5+3, or set in the page): the human and the bot each
-get that time control. Each side's clock starts after its own first move (as on
-lichess, so loading the page doesn't cost time). Running out loses unless the
-opponent has too little material to mate (then it's a draw); a bot that runs out
-mid-search is stopped. The bot searches to its set depth without managing its
-time, so pick a depth it can afford. The server keeps the time, so every viewer
-sees the same clocks.
+Optional clocks: --clock 5+3 (minutes + increment) is the human's and
+--bot-clock 10+0 (seconds + increment) the bot's, or set either in the page;
+leave one out to leave that side untimed. Each side's clock starts after its own
+first move (as on lichess, so loading the page doesn't cost time). Running out
+loses unless the opponent has too little material to mate (then it's a draw); a
+bot that runs out mid-search is stopped. The server keeps the time, so every
+viewer sees the same clocks.
+
+A bot without a clock searches to its set depth. A bot with one manages its
+time instead: each move gets about 1/25 of what's left plus most
+of the increment, and it deepens until that's used (see Bot in bots.py: it stops
+early on a forced mate or a single legal move, and won't start a depth it isn't
+predicted to finish in the move's budget). Pondering is free for it, so it deepens
+the human's 5 likeliest replies together without a limit. If the human plays
+one it already searched to the bot's set depth, it replies at once without
+using its clock; otherwise its search starts from the deepest depth it reached.
 
 Pondering: while it's the human's turn, the bot searches the human's likely
 replies in the background (see Bot.ponder). If the human plays one it has
 finished, it answers instantly; otherwise its caches are still warm. Pondering
-runs on the human's clock, so it costs the bot nothing. Turn it off
+runs on the human's time, so it costs the bot nothing. Turn it off
 with --no-ponder, e.g. to keep the GPU free.
 
 There is one shared game: every open page (including remote viewers through a
@@ -82,7 +92,7 @@ class Game:
     """
 
     def __init__(self, white, black, device=None, fen=None, clock=None, delay=0.0,
-                 book=None, book_plies=16, ponder=True):
+                 book=None, book_plies=16, ponder=True, bot_clock=None):
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
         self.version = 0
@@ -90,9 +100,9 @@ class Game:
         self.ponder_enabled = ponder
         self.pondering = None     # the bot's Ponder while it thinks on the human's time
         self.device = device
-        # Clocks: clock = (base seconds, increment seconds) or None for no clock
-        self.clock = None
-        self.time_left = None     # colour -> seconds, as of turn_start
+        # Clocks: colour -> (base seconds, increment seconds), or None for an untimed side
+        self.clocks = {chess.WHITE: None, chess.BLACK: None}
+        self.time_left = {}       # timed colour -> seconds, as of turn_start
         self.clock_color = None   # whose clock is running
         self.turn_start = None    # time.monotonic() when the running clock was started, else None
         self.flagged = None       # the colour that ran out of time
@@ -102,15 +112,16 @@ class Game:
         self.book_plies = book_plies
         self.books = {}           # file name -> OpeningBook, opened on first use
         with self.lock:
-            self.new(white, black, fen, clock, delay, book)
+            self.new(white, black, fen, clock, delay, book, bot_clock)
 
     def _changed(self):
         self.version += 1
         self.changed.notify_all()
 
-    def new(self, white, black, fen=None, clock=None, delay=0.0, book=None):
+    def new(self, white, black, fen=None, clock=None, delay=0.0, book=None, bot_clock=None):
         """white / black: a bot settings dict (see parse_bot) or None for the human.
-        At most one side can be human; with none, the bots play each other.
+        At most one side can be human; with none, the bots play each other (untimed).
+        clock / bot_clock: the human's and the bot's (base, increment) seconds, or None.
         book: a file name from available_books() for the bots to open from, or None."""
         if white is None and black is None:
             raise ValueError("at least one side must be a bot")
@@ -122,24 +133,31 @@ class Game:
         self.bot_stop.set()   # a bot still thinking about the old game
         self.book = book
         self.specs = {chess.WHITE: white, chess.BLACK: black}
+        self.human_color = (chess.WHITE if white is None else chess.BLACK if black is None else None)
+        if self.human_color is None:
+            clock = bot_clock = None
+        self._stop_clock()
+        self.clocks = ({chess.WHITE: None, chess.BLACK: None} if self.human_color is None
+                       else {self.human_color: clock, not self.human_color: bot_clock})
+        # A bot with a clock searches by time (movetime is its first move's budget)
         self.players = {color: None if spec is None else load_bot(
                             spec["name"], depth=spec["depth"], device=self.device,
                             temperature=spec["temperature"], quiescence_depth=spec["quiescence"],
-                            book=self.books.get(book))
+                            book=self.books.get(book),
+                            movetime=None if self.clocks[color] is None else self._budget(color, self.clocks[color][0]))
                         for color, spec in self.specs.items()}
-        self.human_color = (chess.WHITE if white is None else chess.BLACK if black is None else None)
         self.board = chess.Board(fen) if fen else chess.Board()
         self.move_times = []                  # seconds spent on each move in move_stack
         self.turn_began = time.monotonic()    # when the side to move started its turn
         self.eval = None      # White-perspective score from the last bot search
         self.eval_by = None   # which bot made it
         self.eval_book = False   # the last bot move came from the opening book
+        self.eval_depth = None   # depth of the search that made it
+        self.think_until = None  # time.monotonic() when a timed bot's move budget runs out
         self.ponder_hit = False  # the last bot move was found while pondering
         self.delay = delay if self.human_color is None else 0.0
         self.paused = False
-        self._stop_clock()
-        self.clock = clock if self.human_color is not None else None
-        self.time_left = {chess.WHITE: self.clock[0], chess.BLACK: self.clock[0]} if self.clock else None
+        self.time_left = {color: c[0] for color, c in self.clocks.items() if c is not None}
         self.flagged = None
         self._changed()
         self._start_clock()
@@ -160,7 +178,7 @@ class Game:
         """Start the clock of the side to move, after its first move, if no clock
         is running."""
         color = self.board.turn
-        if self.clock is None or self.turn_start is not None or self._over() or not self._has_moved(color):
+        if self.clocks[color] is None or self.turn_start is not None or self._over() or not self._has_moved(color):
             return
         self.clock_color = color
         self.turn_start = time.monotonic()
@@ -181,11 +199,11 @@ class Game:
         self.clock_token += 1
         left = self.time_left[color]
         if increment and left > 0:
-            self.time_left[color] += self.clock[1]
+            self.time_left[color] += self.clocks[color][1]
         return left
 
     def _clock_left(self, color):
-        if self.time_left is None:
+        if color not in self.time_left:
             return None
         used = time.monotonic() - self.turn_start if color == self.clock_color else 0.0
         return max(0.0, self.time_left[color] - used)
@@ -231,6 +249,12 @@ class Game:
             self.pondering.finish()   # aborts within one search node
             self.pondering = None
 
+    def _budget(self, color, left=None):
+        """Seconds a bot with a clock may think on this move: about 1/25 of its time
+        plus most of its increment, never more than half of what's left."""
+        left = self._clock_left(color) if left is None else left
+        return min(left / 25 + 0.75 * self.clocks[color][1], left / 2)
+
     def _start_bot_if_its_turn(self):
         bot = self.players[self.board.turn]
         if self.thinking or self._over() or bot is None or self.paused:
@@ -238,17 +262,19 @@ class Game:
         self.thinking = True
         ponder, self.pondering = self.pondering, None   # the worker stops it before searching
         self.bot_stop = threading.Event()
+        movetime = None if self.clocks[self.board.turn] is None else self._budget(self.board.turn)
+        self.think_until = None if movetime is None else time.monotonic() + movetime
         self._changed()
         threading.Thread(target=self._bot_worker,
-                         args=(bot, self.board.copy(), self.version, self.delay, ponder, self.bot_stop),
+                         args=(bot, self.board.copy(), self.version, self.delay, ponder, self.bot_stop, movetime),
                          daemon=True).start()
 
-    def _bot_worker(self, bot, board, started_at, delay, ponder, stop):
+    def _bot_worker(self, bot, board, started_at, delay, ponder, stop, movetime):
         start = time.monotonic()
         try:
             if ponder is not None:
-                ponder.finish(board)   # lets a search of this exact position complete
-            move, score = bot.search(board, stop)   # slow part runs without the lock
+                ponder.finish(board, stop)   # lets a search of this exact position complete (untimed bots)
+            move, score = bot.search(board, stop, movetime)   # slow part runs without the lock
         except SearchAborted:   # out of time, undo or new game
             move = None
         except Exception as e:
@@ -260,11 +286,12 @@ class Game:
             self.thinking = False
             # Only play the move if nobody undid / restarted while the bot was thinking
             if move is not None and self.version == started_at:
-                if self.clock is not None and (left := self._stop_clock(increment=True)) is not None and left <= 0:
+                if (left := self._stop_clock(increment=True)) is not None and left <= 0:
                     self._set_flagged(board.turn)   # finished after its flag fell
                     return
                 self._push(move, thought)
                 self.eval_by, self.eval_book = bot.name, score is None
+                self.eval_depth = None if score is None else bot.last_depth
                 if score is not None:   # a book move has no score: keep showing the last one
                     self.eval = score
                 self.ponder_hit = bot.last_pondered
@@ -307,14 +334,20 @@ class Game:
             "result": result,
             "reason": reason,
             "flagged": self.flagged is not None,
-            "clock": None if self.clock is None else {
-                "base": self.clock[0], "increment": self.clock[1],
+            # Each side's (base, increment) and time left, or None if untimed
+            "clock": None if not self.time_left else {
+                "controls": {name: None if self.clocks[color] is None else
+                             {"base": self.clocks[color][0], "increment": self.clocks[color][1]}
+                             for name, color in (("white", chess.WHITE), ("black", chess.BLACK))},
                 "white": self._clock_left(chess.WHITE), "black": self._clock_left(chess.BLACK),
                 "running": None if self.clock_color is None else "white" if self.clock_color == chess.WHITE else "black",
             },
             "eval": self.eval,
             "evalBy": self.eval_by,
             "evalBook": self.eval_book,
+            "evalDepth": self.eval_depth,
+            "thinkLeft": (max(0.0, self.think_until - time.monotonic())   # a timed bot's move budget
+                          if self.thinking and self.think_until is not None else None),
             "book": self.book,
             "books": available_books(),
             "bots": available_bots(),
@@ -331,11 +364,10 @@ class Game:
         move = chess.Move.from_uci(uci)
         if self._over() or self.board.turn != self.human_color or move not in self.board.legal_moves:
             raise ValueError(f"illegal move {uci}")
-        if self.clock is not None:
-            left = self._stop_clock(increment=True)
-            if left is not None and left <= 0:   # the move arrived after the flag fell
-                self._set_flagged(self.human_color)
-                raise ValueError("out of time")
+        left = self._stop_clock(increment=True)
+        if left is not None and left <= 0:   # the move arrived after the flag fell
+            self._set_flagged(self.human_color)
+            raise ValueError("out of time")
         self._push(move, time.monotonic() - self.turn_began)
         self._changed()
         self._start_clock()   # the bot's
@@ -393,8 +425,12 @@ class Game:
             game.headers["Result"] = result
             if self.flagged is not None:
                 game.headers["Termination"] = "time forfeit"
-        if self.clock:
-            game.headers["TimeControl"] = f"{self.clock[0]:g}+{self.clock[1]:g}"
+        tc = {color: None if c is None else f"{c[0]:g}+{c[1]:g}" for color, c in self.clocks.items()}
+        if tc[chess.WHITE] == tc[chess.BLACK] and tc[chess.WHITE]:
+            game.headers["TimeControl"] = tc[chess.WHITE]
+        elif any(tc.values()):   # odds: the PGN standard has one time control, so say each side's
+            game.headers["WhiteTimeControl"] = tc[chess.WHITE] or "-"
+            game.headers["BlackTimeControl"] = tc[chess.BLACK] or "-"
         return str(game)
 
 
@@ -406,6 +442,17 @@ def parse_clock(spec):
     base, inc = float(minutes) * 60, float(increment or 0)
     if not (0 < base <= 3 * 3600 and 0 <= inc <= 300):
         raise ValueError("clock must be 0-180 minutes + 0-300 seconds")
+    return base, inc
+
+
+def parse_bot_clock(spec):
+    """'10' or '10+1' (seconds + increment seconds) -> (10.0, 1.0); None / '' / 'none' -> None."""
+    if not spec or str(spec).lower() == "none":
+        return None
+    seconds, _, increment = str(spec).partition("+")
+    base, inc = float(seconds), float(increment or 0)
+    if not (0 < base <= 3 * 3600 and 0 <= inc <= 300):
+        raise ValueError("bot clock must be 0-10800 seconds + 0-300 seconds")
     return base, inc
 
 
@@ -516,7 +563,8 @@ def make_handler(game: Game):
                         white = None if body.get("white") is None else parse_bot(body["white"])
                         black = None if body.get("black") is None else parse_bot(body["black"])
                         game.new(white, black, body.get("fen"), parse_clock(body.get("clock")),
-                                 parse_delay(body.get("delay")), body.get("book") or None)
+                                 parse_delay(body.get("delay")), body.get("book") or None,
+                                 parse_bot_clock(body.get("botClock")))
                     elif self.path == "/api/pause":
                         game.set_paused(body.get("paused", True))
                     else:
@@ -541,6 +589,8 @@ def main():
     parser.add_argument("--fen", help="start from this position")
     parser.add_argument("--device", help="cpu or cuda (default: cuda if available)")
     parser.add_argument("--clock", help="your clock as MINUTES+INCREMENT, e.g. 5+3 (default: no clock)")
+    parser.add_argument("--bot-clock", help="the bot's clock as SECONDS[+INCREMENT], e.g. 10 for 10 s a game; "
+                                            "it then searches by time instead of depth (default: no clock)")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="sample the bot's moves with this temperature in centipawns (default: 0, always the best move)")
     parser.add_argument("--book", nargs="?", const="gm2001.bin",
@@ -559,7 +609,7 @@ def main():
     else:
         white, black = (None, bot(args.bot)) if args.color == "white" else (bot(args.bot), None)
     game = Game(white, black, args.device, args.fen, parse_clock(args.clock), parse_delay(args.delay),
-                args.book, args.book_plies, ponder=not args.no_ponder)
+                args.book, args.book_plies, ponder=not args.no_ponder, bot_clock=parse_bot_clock(args.bot_clock))
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(game))
     url = f"http://localhost:{args.port}"
