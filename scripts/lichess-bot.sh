@@ -58,8 +58,8 @@
 #
 # Bullet vs blitz settings (what the presets change, and how to adjust them):
 #                 clock   think per move (budget)                     pondered reply played at once from
-#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    depth 5   (--bot t2-w-lichess-6.41m:5)
-#   bullet        1+1     1/20 of clock + increment: ~4 s at 1:00,    depth 4   (--bot t2-w-lichess-6.41m:4)
+#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    depth 5   (--bot t2-sb-w-lichess-6.97m:5)
+#   bullet        1+1     1/20 of clock + increment: ~4 s at 1:00,    depth 4   (--bot t2-sb-w-lichess-6.97m:4)
 #                         3 s at 0:40, 2 s at 0:20, 1.4 s at 0:08
 #   - The 1/12 vs 1/20 is chosen automatically from each game's starting clock
 #     (under 3 minutes = bullet), for ANY game, including friends' challenges in
@@ -96,7 +96,7 @@ BOOK=Cerebellum3Merge.bin
 [ -f "Models/Books/$BOOK" ] || BOOK=gm2001.bin
 # Model and depth: NAME:DEPTH. The search is timed with no depth limit; DEPTH is how
 # deep a pondered reply must have been searched to be played without thinking more.
-DEFAULTS=(--bot t2-w-lichess-6.41m:5 --book "$BOOK" --book-plies 30)
+DEFAULTS=(--bot t2-sb-w-lichess-6.97m:5 --book "$BOOK" --book-plies 30)
 # Bots for `series` to challenge in turn, all roughly 1600-2300 blitz. Any that decline
 # twice or don't answer are skipped for the rest of the run. Edit freely.
 OPPONENTS=CosetteBot,Hyperopic,turkjs,Bottios,Boris-Trapsky,kopyto_dev,stickshark99,uzenatch,matmoi,pi0w,sseh-c,TucuEngine,TopasBot,jangine,GarboBot
@@ -107,7 +107,7 @@ BLITZ=(--challenge "$OPPONENTS" --games 10 --clock 3+2 --rated)
 # Bullet: lichess.py already budgets 1/20 of the clock under 3 minutes (about 4 s at 1:00,
 # so ~0.2 s of lag per move stays affordable); play pondered replies from depth 4, and
 # depth 4 is what 3-4 s usually reaches. Friends' bullet challenges get the same timing.
-BULLET=(--bot t2-w-lichess-6.41m:4 --challenge "$OPPONENTS" --games 10 --clock 1+1 --rated)
+BULLET=(--bot t2-sb-w-lichess-6.97m:4 --challenge "$OPPONENTS" --games 10 --clock 1+1 --rated)
 
 # The bot's pid, if it's running (exit status 1 otherwise)
 pid() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && cat "$PIDFILE"; }
