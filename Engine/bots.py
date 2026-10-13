@@ -172,7 +172,7 @@ BOTS = {
     "t2-w-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-6.41M"),   # V2, win-probability target
     "t2-w-all-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-All-6.41M"),   # V2, win-prob, + tactics
     "t2-w-lichess-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-W-Lichess-6.41M"),   # V2, win-prob, + 393M Lichess positions, 1 epoch
-    "t3-w-lichess-14.4m": NoFeatSpec("Models/Weights/SlackFishV-T3-W-Lichess-14.4M"),   # V3, 14.4M, same data and settings as t2-w-lichess
+    "t3-w-lichess-14.4m": NoFeatSpec("Models/Weights/SlackFishV-T3-W-Lichess-14.4M"),   # V3, 14.4M, same data as t2-w-lichess; weaker (experiment record)
     "t2-sb-w-lichess-6.97m": NoFeatSpec("Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M"),   # V3 at V2 sizes + spatial attention bias, same data as t2-w-lichess
 }
 
