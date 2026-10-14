@@ -30,6 +30,26 @@ castling/turn tokens: ~20x fewer parameters, and each relationship ("a knight's 
 away") is learned once for the whole board. Could show the head start sooner; compare
 against T2-SB.
 
+## 64 tokens instead of 66 (inference speed)
+
+**Observation:** profiling inference on the RTX 500 laptop GPU (batch of 32, the size the
+search sends), memory-efficient attention is 36% of GPU time, matrix multiplies 41%,
+LayerNorm + GELU 18%. Its kernel works in 64 x 64 tiles, so the 66-token sequence (64
+squares + castling + side to move) costs 2 x 2 tiles per head, nearly half of it padding.
+Quantization doesn't help (fp8 / int8 via torchao: no faster at search batch sizes,
+25-60x the error of float16), nor do other SDPA backends or `torch.compile`.
+
+**Idea:** fold castling rights and the side to move into the square tokens instead of
+giving them their own tokens: e.g. add a learned "side to move" vector to every square
+embedding, and castling-rights vectors to the king and rook squares (or to all squares).
+Then the sequence is exactly 64 and attention fits one tile; the spatial bias table
+becomes 64 x 64 (rank/file geometry only).
+
+- Needs retraining (new token layout); compare validation MAE with T2-SB-W-Lichess and
+  measure positions/s in `Engine/bots.py` at batch 20-64. Expect a sizeable cut in
+  attention time (it's the padding), so maybe 10-20% overall; benchmark before training.
+- En passant is already encoded in the square tokens, so nothing else needs a token.
+
 ## Learning rate for bigger models
 
 **Observation:** T3 (V3, 14.4M, width 384) trailed T2-W-Lichess-6.41M (width 256) at the
@@ -54,5 +74,5 @@ with width for future large runs (roughly lr x 256 / d_model as a starting point
 - Bigger model on the full data: tried (T3-W-Lichess-14.4M), no gain; retry only with a
   width-scaled learning rate (above).
 - Steeper win-probability curve (`--wp-scale` ~200) and true win/draw/loss labels.
-- Time management in search: the bot searches to a fixed depth, so it can lose on time
-  in the GUI with a clock.
+- ~~Time management in search~~: done. A bot with a clock (GUI `--bot-clock`, the
+  Lichess bridge) searches by time, see `Bot` in `Engine/bots.py`.
