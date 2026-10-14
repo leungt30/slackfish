@@ -270,7 +270,7 @@ epoch 2: train 0.8233  val MSE 0.7999  val MAE 315 cp  mirrored 309 cp  (27s)
 
 **Colour-swap augmentation:** half of the training positions (`--augment-prob 0.5`) are mirrored with colours, castling and turn swapped and the score negated (`NoFeat/augment.py`, equivalent to python-chess `board.mirror()`). `mirrored` in the log is validation MAE on the colour-swapped validation set. If it's far from the normal MAE, the model treats the two colours differently. SlackFishV-T1-3.25M, trained without augmentation, scores 136 cp as-is and 182 cp mirrored.
 
-Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
+Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--warmup-steps`, `--schedule wsd` with `--decay-frac` (flat after warmup, then a linear decay over the last fraction), `--lr-floor` (final LR as a fraction of `--lr`, default 0.1), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
 
 **Multiple GPUs:** run the same command under `uv run torchrun --nproc-per-node N -m NoFeat.train ...`; plain `python -m NoFeat.train` still uses one GPU (or the CPU). Each GPU runs its own process with a full copy of the model (PyTorch `DistributedDataParallel`), takes an equal slice of every step's batch, and gradients are averaged after each backward pass. `--batch-size` is the global batch and must divide evenly by N, so a run on N GPUs takes the same steps with the same LR schedule as on one, and a checkpoint resumes on any number of GPUs. With dropout off, a 4-GPU run follows the 1-GPU run's loss and validation curves within run-to-run noise, and on one GPU the code reproduces the single-GPU trainer bit for bit (in PyTorch's deterministic mode). Validation is split across the GPUs; only rank 0 prints, logs to W&B and writes checkpoints. A packed `--data` folder is memory-mapped, so the N processes share one copy of it in the page cache instead of each holding ~15 GB.
 
@@ -284,7 +284,19 @@ More GPUs only pay off with a bigger global batch: at the t2-sb run's `--batch-s
 | 4 | 4096 (1024) | 56,900 | 3.5× |
 | 4 | 2048 (512), `--no-compile` | 45,700 | 2.8× |
 
-At 52k positions/s, one pass over the 393M Lichess positions takes about 2 hours instead of 6.6 on one GPU. A larger batch usually wants a larger `--lr`; the published models were all trained at batch 512–1024 and lr 3e-4, and how far that stretches hasn't been tested.
+At 52k positions/s, one pass over the 393M Lichess positions takes about 2 hours instead of 6.6 on one GPU. A larger batch needs a larger `--lr`: on a 20M-position sample of the Lichess evaluation database (t2-sb architecture, 4 GPUs, warmup ~1M positions unless noted), validation MAE was
+
+| `--batch-size` | `--lr` | Schedule | Val MAE | Time |
+|---|---|---|---|---|
+| 512 | 3e-4 | cosine to 10% (the published setting) | 196 cp | 13.1 min |
+| 2048 | 3e-4 | cosine to 10% | 206 cp | 6.7 min |
+| 2048 | 6e-4 | cosine to 10% | 200 cp | 6.5 min |
+| 2048 | 1.2e-3 | cosine to 10% | 195 cp | 6.4 min |
+| 4096 | 8.5e-4 | cosine to 10% | 205 cp | 5.9 min |
+| 2048 | 1.2e-3 | cosine to 1%, 2000-step warmup | 193 cp | 6.4 min |
+| 2048 | 1.2e-3 | **WSD, last 20%, to 1%, 2000-step warmup** | **189 cp** | 6.4 min |
+
+Scaling the LR linearly with the batch (2048 at 1.2e-3) matched batch 512 in half the time, and warmup-stable-decay did best. Each is a single run on 5% of the data: a starting point for a full run, not a tuned setting. A WSD run's mid-run validation lags a cosine run's until its decay (it gained 12 cp in the last 20%), so compare runs at the end.
 
 **Performance on an RTX 500 Ada laptop GPU (4 GB):** about 3,700 positions/s with `torch.compile`, so one epoch over all 14M positions takes about 62 minutes. Peak GPU memory is about 3 GB at batch size 1024. In play it's much faster than v1/v2, because there's no feature engineering: depth 2 takes about 0.2s per move.
 
