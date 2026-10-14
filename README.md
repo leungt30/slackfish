@@ -147,6 +147,13 @@ scripts/lichess-bot.sh stop                      # once the current game ends (-
 
 On its clock it spends about 1/12 of its remaining time plus the increment per move (1/20 for clocks under 3 minutes, whoever started the game; `--moves-left N` overrides it), searching as deep as that allows, and ponders the opponent's 5 likeliest replies on their time. A pondered reply that reached the `:DEPTH` of `--bot` (5 in the script, 4 in its bullet preset) is played instantly. The header of `scripts/lichess-bot.sh` explains every setting and how to adjust it, written so another assistant can operate the bot. With 7 pieces or fewer it plays the perfect move from [Lichess's endgame tablebase](https://tablebase.lichess.ovh) instead of searching, so won endings get converted (the search alone once shuffled checks with king and queen until a threefold repetition). It accepts a draw offer only when its own evaluation is under +0.10, and resumes a game in progress after a restart or a dropped connection. `--stockfish 1,2,3` challenges Lichess's own Stockfish levels instead (always casual). Setup (a new account, its token in `.lichess_token`, and `lichess.py upgrade`) is in the docstring of `Engine/lichess.py`.
 
+`Engine/clockreport.py` shows how both sides used their clocks in its games: each player's normal time per move early on against its last moves, and whether a slowdown was forced by the clock ("clock-limited": it kept spending the same share of a shrinking clock, or started rushing with under a quarter of its time left), was instant pondered replies, or was by choice. It sums this up per opponent, with the bot's score when the opponent was clock-limited. `--plot DIR` saves a chart of both clocks and the seconds per move for each game.
+
+```bash
+uv run python Engine/clockreport.py --max 20 --perf blitz         # the bot's last 20 blitz games (uses .lichess_token)
+uv run python Engine/clockreport.py https://lichess.org/rs8O1zUO --plot clocks/   # any game, no token needed
+```
+
 ### Search depth
 
 - **Depth 1** scores every legal move with the model and plays the best one. This is how the original scripts played.
@@ -496,6 +503,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
 │   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
+│   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
 │   ├── export.py            # Game -> animated GIF / final-position PNG
 │   ├── GameLoop.py          # Legacy, broken (see below)
 │   ├── BotVsBot.py          # Legacy, needs V5 weights
