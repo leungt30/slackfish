@@ -156,6 +156,13 @@ On its clock it spends about 1/12 of its remaining time plus the increment per m
 
 Rough speed for v2 on an RTX 500 laptop GPU in the opening: depth 1 is instant, depth 2 about 0.1s, and depth 3 about 1.5–3s per move. Each extra ply multiplies the cost by roughly the number of legal moves. Feature engineering (`featureEng.py`) is the bottleneck, not the network.
 
+**Timed search.** On a clock (`Engine/lichess.py`, the GUI's bot clock) the bot deepens one depth at a time and only starts the next if it's predicted to finish in the time left, from the last depth's time and a minimum growth per depth (`GROWTH` in `Engine/bots.py`). `Engine/timebench.py` measures how long each depth takes on 25 fixed positions (`Engine/data/timing.fen`) and replays those decisions for different time budgets and floors, so the floors can be checked on each machine the bot plays from:
+
+```bash
+uv run python Engine/timebench.py --save times.json --floors 5=4,6=3   # ~4 min on an RTX 2080 Ti
+uv run python Engine/timebench.py --load times.json --floors 5=3,6=2.5   # re-simulate saved timings
+```
+
 ### Using it from Python
 
 ```python
@@ -488,6 +495,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── play.py              # Game runner + CLI (bot/human vs bot/human)
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
 │   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
+│   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
 │   ├── export.py            # Game -> animated GIF / final-position PNG
 │   ├── GameLoop.py          # Legacy, broken (see below)
 │   ├── BotVsBot.py          # Legacy, needs V5 weights

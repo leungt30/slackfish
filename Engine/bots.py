@@ -586,6 +586,7 @@ class Bot:
                     self._deadline is not None and self._deadline - time.monotonic() < self._next_iteration(took, depth + 1))):
                 break
         self._can_time_out = False
+        self.last_iteration_secs = took   # for Engine/timebench.py
         return result
 
     @staticmethod
