@@ -7,7 +7,7 @@ Benchmark the bot's search on fixed test positions, to measure search changes.
     uv run python Engine/searchbench.py --set use_null_move=False --set check_extensions=0 --label no-nmp
 
 Suites:
-  blunders  the decisive mistakes SlackFish made in its Lichess losses (the
+  blunders  14 decisive mistakes SlackFish made in its Lichess losses (the
             position before its move). Stockfish scores the bot's move against
             Stockfish's preferred move; the move passes if it loses under 10 win%
             (Lichess's win% formula, from the mover's side). "repeat" marks a
@@ -61,6 +61,13 @@ BLUNDERS = [
     ("BTWszipI", 12, "r1br2k1/pp3ppp/2nq1n2/3pp3/8/2NBPN1P/PPP1QPP1/3R1RK1 b - - 1 12", "Bxh3", "h6"),
     ("G2GhGMpo", 44, "6k1/5p2/8/3Q1p1p/8/5P1P/5qPK/8 b - - 0 44", "Qc2", "h4"),
     ("8O7rMqxd", 23, "r2r2k1/1b2bp1p/p3p3/q1n1Q1p1/8/2N1P3/PR1NBPPP/2R3K1 b - - 3 23", "Rxd2", "Rac8"),
+    # An attack misjudged by the network, not missed by the search: Black is down material
+    # but winning by attack at move 26 (+7.6), where depth 3-5 find good moves and depth 6
+    # scores them all about the same and plays Qxh3+ (0.00), with pruning on or off. Then it
+    # rates a dead-level position +7.4 for itself and skips the perpetual (31...Rf8+).
+    ("szQJ0LKM", 26, "3r1r1k/1Q6/6pp/p1pBb3/P3P1P1/7P/1P3P1q/R2NRK2 b - - 6 26", "Qxh3+", "Bg3"),
+    ("szQJ0LKM", 29, "1r3r1k/8/6pp/p2Bb3/P1Q1P1P1/7q/1P2KP2/R2NR3 b - - 0 29", "Rxf2+", "Qf3+"),
+    ("szQJ0LKM", 31, "1r5k/8/6pp/p2Bb3/P1Q1P1P1/5K2/1P5q/R2NR3 b - - 2 31", "h5", "Rf8+"),
 ]
 
 
@@ -167,7 +174,7 @@ def settings(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--suite", choices=["blunders", "wac", "all"], default="blunders")
-    p.add_argument("--bot", default="t2-w-lichess-6.41m")
+    p.add_argument("--bot", default="t2-sb-w-lichess-6.97m", help="bot to test (default: the default bot, t2-sb-w-lichess-6.97m)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--depth", type=int, default=3)
     g.add_argument("--movetime", type=float, help="seconds per position instead of a fixed depth")
