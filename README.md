@@ -212,6 +212,9 @@ uv run python -m NoFeat.prepare_data --limit 50000 --out data/nofeat_small.npz  
 # ... plus the Lichess evaluation database (see Data): ~410M positions in ~20 min, written as a
 # packed folder (squares two per byte, ~15 GB) so it fits in RAM for training
 uv run python -m NoFeat.prepare_data --lichess /path/to/lichess_db_eval.jsonl.zst --out /data/slackfish/nofeat_all
+# ... plus the analysed positions of a month of Lichess games (see Data), tagged lichess_games
+uv run python -m NoFeat.prepare_data --lichess /path/to/lichess_db_eval.jsonl.zst \
+    --lichess-games /path/to/lichess_db_standard_rated_2026-09.pgn.zst --out /data/slackfish/nofeat_games
 
 # 2. Train a named model. --out is required; checkpoints go to <out>/{last,best}.pt
 uv run python -m NoFeat.train --out Models/Weights/SlackFishV-T3 --epochs 10
@@ -226,6 +229,11 @@ uv run python -m NoFeat.train --arch v3 --d-model 256 --heads 16 --d-ff 1024 --l
     --target winprob --sources games random tactics lichess \
     --epochs 1 --batch-size 512 --dropout 0 --val-frac 0.005 --val-every 10000 --save-every 5000 \
     --data /data/slackfish/nofeat_all --out Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M
+# Several GPUs: the same command under torchrun, one process per GPU (see Multiple GPUs below)
+uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v3 --d-model 256 --heads 16 --d-ff 1024 \
+    --layers 8 --spatial-bias --target winprob --sources lichess --epochs 1 --batch-size 2048 \
+    --dropout 0 --val-frac 0.005 --val-every 10000 --save-every 5000 \
+    --data data/nofeat_lichess --out Models/Weights/SlackFishV-T2-SB-W-Lichess-4GPU
 
 # 2b. Export for play and sharing: model.safetensors + config.json next to best.pt
 uv run python -m NoFeat.export Models/Weights/SlackFishV-T3/best.pt
@@ -249,6 +257,20 @@ epoch 2: train 0.8233  val MSE 0.7999  val MAE 315 cp  mirrored 309 cp  (27s)
 **Colour-swap augmentation:** half of the training positions (`--augment-prob 0.5`) are mirrored with colours, castling and turn swapped and the score negated (`NoFeat/augment.py`, equivalent to python-chess `board.mirror()`). `mirrored` in the log is validation MAE on the colour-swapped validation set. If it's far from the normal MAE, the model treats the two colours differently. SlackFishV-T1-3.25M, trained without augmentation, scores 136 cp as-is and 182 cp mirrored.
 
 Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
+
+**Multiple GPUs:** run the same command under `uv run torchrun --nproc-per-node N -m NoFeat.train ...`; plain `python -m NoFeat.train` still uses one GPU (or the CPU). Each GPU runs its own process with a full copy of the model (PyTorch `DistributedDataParallel`), takes an equal slice of every step's batch, and gradients are averaged after each backward pass. `--batch-size` is the global batch and must divide evenly by N, so a run on N GPUs takes the same steps with the same LR schedule as on one, and a checkpoint resumes on any number of GPUs. With dropout off, a 4-GPU run follows the 1-GPU run's loss and validation curves within run-to-run noise, and on one GPU the code reproduces the single-GPU trainer bit for bit (in PyTorch's deterministic mode). Validation is split across the GPUs; only rank 0 prints, logs to W&B and writes checkpoints. A packed `--data` folder is memory-mapped, so the N processes share one copy of it in the page cache instead of each holding ~15 GB.
+
+More GPUs only pay off with a bigger global batch: at the t2-sb run's `--batch-size 512`, each of 4 GPUs gets 128 positions per step and spends much of its time waiting on gradient exchange. Throughput for the t2-sb architecture (6.97M parameters, `torch.compile`, bf16) on 4× RTX 4090 over PCIe (no NVLink; consumer 4090s can't exchange data directly, so NCCL goes through host memory, ~8 ms to average the gradients):
+
+| GPUs | `--batch-size` (per GPU) | Positions/s | Speedup |
+|---|---|---|---|
+| 1 | 512 (512) | 16,400 | 1× |
+| 1 | 2048 (2048) | 16,000 | 1× |
+| 4 | 2048 (512) | 52,300 | 3.2× |
+| 4 | 4096 (1024) | 56,900 | 3.5× |
+| 4 | 2048 (512), `--no-compile` | 45,700 | 2.8× |
+
+At 52k positions/s, one pass over the 393M Lichess positions takes about 2 hours instead of 6.6 on one GPU. A larger batch usually wants a larger `--lr`; the published models were all trained at batch 512–1024 and lr 3e-4, and how far that stretches hasn't been tested.
 
 **Performance on an RTX 500 Ada laptop GPU (4 GB):** about 3,700 positions/s with `torch.compile`, so one epoch over all 14M positions takes about 62 minutes. Peak GPU memory is about 3 GB at batch size 1024. In play it's much faster than v1/v2, because there's no feature engineering: depth 2 takes about 0.2s per move.
 
@@ -496,8 +518,8 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── encode.py            # FEN -> 64 square tokens + castling token + turn token
 │   ├── model.py             # ChessTransformerV1, V2, V3 (V3: encoder written out layer by layer)
 │   ├── augment.py           # Colour-swap augmentation
-│   ├── prepare_data.py      # CSVs (+ Lichess) -> .npz or a packed folder
-│   ├── train.py             # Training loop
+│   ├── prepare_data.py      # CSVs (+ Lichess evals and games) -> .npz or a packed folder
+│   ├── train.py             # Training loop (one GPU, or several under torchrun)
 │   ├── export.py            # Checkpoint -> model.safetensors + config.json
 │   └── evaluator.py         # Load a model for play
 ├── Models/
@@ -560,6 +582,10 @@ data/tactic_evals.csv    # 2,628,219 positions
 ### Lichess evaluation database
 
 The [Lichess evaluation database](https://database.lichess.org/#evals) (`lichess_db_eval.jsonl.zst`, 22.4 GB compressed, CC0) has 416,442,401 positions analysed with Stockfish by Lichess users, one JSON line each: a FEN without move counters, and one or more evaluations, each with its search depth and principal variations (`cp` or `mate`, from White's perspective, best line first). `NoFeat.prepare_data --lichess` streams it through `zstd -dc`, takes each position's deepest evaluation, and keeps those searched to depth 20 or more (`--min-depth`): 393,212,303 positions (94.4%). The median depth is about 37, far deeper than the CSVs' depth 22. The positions are ones people chose to analyse, so they lean towards openings, sharp middlegames and endgames rather than random play; 12% of the combined set are forced mates.
+
+### Lichess games
+
+The monthly [standard games dumps](https://database.lichess.org/#standard_games) (`lichess_db_standard_rated_YYYY-MM.pgn.zst`, CC0; September 2026: 29.2 GB, ~89.6M games) add positions from real play. Only games with Lichess server analysis carry evaluations (~6% of a month; 10% of the first 4M games of September 2026), as a `[%eval 0.17]` / `[%eval #-3]` comment after each move: Stockfish's score of the position after the move, from White's perspective, in pawns, with no depth recorded. Lichess analyses the first 300 plies and fills the first 15 from its cloud evals (the evaluation database above), so `NoFeat.prepare_data --lichess-games` keeps positions from ply 15 on (`--games-min-ply`), skipping checkmates and stalemates. Games without an `[%eval` are skipped by a substring search without being parsed. An analysed game gives ~52 positions; the same position recurs across games (1.6% of them in 4M games, 12% when the opening plies are kept), so the positions are deduplicated, each keeping the mean of its evaluations. They are tagged `lichess_games`. They are lower-rated, messier positions than the evaluation database's: median |eval| 279 cp against 61, 7% forced mates against 16%. A month takes ~15 min on 32 threads.
 
 ## Retraining V5
 

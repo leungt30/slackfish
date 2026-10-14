@@ -39,6 +39,17 @@ Data sources: --sources picks which CSVs to train on (games, random, tactics).
 The validation split is drawn from every source, and MAE is reported per
 source, so excluded sources (e.g. tactics) still show how the model handles them.
 best.pt is chosen by validation MSE on the training sources only.
+
+Multiple GPUs: launch with torchrun, one process per GPU (DistributedDataParallel):
+
+    uv run torchrun --nproc-per-node 4 -m NoFeat.train --out ... (same options)
+
+--batch-size stays the global batch: each GPU takes an equal slice of every step's
+batch and gradients are averaged, so a run on N GPUs follows the same steps and LR
+schedule as on one, and checkpoints resume on any number of GPUs. A larger global
+batch (with a larger --lr) is what makes more GPUs pay off. Validation is split
+across the GPUs; only rank 0 logs and writes checkpoints. A packed --data folder is
+memory-mapped, so the processes share one copy of it in the page cache.
 """
 import argparse
 import json
@@ -48,7 +59,9 @@ import time
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
 
 from NoFeat.augment import mirror_tokens
@@ -103,36 +116,71 @@ def parse_args():
 
 
 @torch.no_grad()
-def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=False):
-    """(predictions, targets) for idx in model units, as CPU tensors."""
+def evaluate(model, squares, castling, turn, targets, idx, args, device, mirror=False, world=1, rank=0):
+    """(predictions, targets) for idx in model units, as CPU tensors. With several
+    processes each scores its share of idx and the predictions are gathered."""
     model.eval()
-    preds, ys = [], []
-    for i in range(0, len(idx), 1024):
-        b = idx[i:i + 1024]
+    preds = []
+    shard = idx.tensor_split(world)[rank]
+    for i in range(0, len(shard), 1024):
+        b = shard[i:i + 1024]
         sq, ca, tu = batch_squares(squares, b, device), castling[b].to(device).long(), turn[b].to(device).long()
-        y = targets[b].to(device)
         if mirror:
             sq, ca, tu = mirror_tokens(sq, ca, tu)
-            y = -y
         with autocast(args, device):
-            pred = model(sq, ca, tu).float()
-        preds.append(pred.cpu())
-        ys.append(y.cpu())
+            preds.append(model(sq, ca, tu).float())
     model.train()
-    return (torch.cat(preds), torch.cat(ys)) if preds else (torch.zeros(0), torch.zeros(0))
+    pred = torch.cat(preds) if preds else torch.zeros(0, device=device)
+    if world > 1:
+        pred = gather_shards(pred, len(idx), world)
+    y = targets[idx]
+    return pred.cpu(), -y if mirror else y
+
+
+def gather_shards(part, n, world):
+    """Every process's part of idx.tensor_split(world), concatenated in order."""
+    sizes = [n // world + (r < n % world) for r in range(world)]
+    padded = part.new_zeros(sizes[0])   # all_gather needs equal sizes; shard 0 is the largest
+    padded[:len(part)] = part
+    out = part.new_empty(world * sizes[0])
+    dist.all_gather_single(out, padded)
+    return torch.cat([out[r * sizes[0]:r * sizes[0] + sizes[r]] for r in range(world)])
 
 
 def load_data(path):
-    """The prepared arrays as {name: numpy array}, from an .npz or a packed folder."""
+    """The prepared arrays as {name: numpy array}, from an .npz or a packed folder.
+
+    A packed folder is memory-mapped (copy-on-write, never written), so several
+    training processes share one copy in the page cache. It is read through once
+    first so training doesn't page it in from disk at random."""
     if not os.path.isdir(path):
         return np.load(path)
     with open(os.path.join(path, "meta.json")) as f:
         meta = json.load(f)
     n = meta["n"]
-    read = lambda name, dtype, shape: np.fromfile(os.path.join(path, f"{name}.bin"), dtype=dtype).reshape(shape)
+
+    def read(name, dtype, shape):
+        file = os.path.join(path, f"{name}.bin")
+        with open(file, "rb", buffering=0) as f:
+            buf = bytearray(1 << 26)
+            while f.readinto(buf):
+                pass
+        return np.memmap(file, dtype=dtype, mode="c", shape=shape)
     return {"squares": read("squares", np.uint8, (n, 32)), "castling": read("castling", np.uint8, n),
             "turn": read("turn", np.uint8, n), "eval": read("eval", np.float32, n),
             "source": read("source", np.uint8, n), "source_names": np.array(meta["source_names"])}
+
+
+def setup_distributed():
+    """(rank, world size, device). Under torchrun (WORLD_SIZE > 1) this joins the
+    NCCL process group, one GPU per process; otherwise it's a single process."""
+    world = int(os.environ.get("WORLD_SIZE", 1))
+    if world == 1:
+        return 0, 1, torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
+    torch.cuda.set_device(device)
+    dist.init_process_group("nccl", device_id=device)
+    return dist.get_rank(), world, device
 
 
 def batch_squares(squares, b, device):
@@ -177,7 +225,11 @@ def val_metrics(pred, y, args):
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    rank, world, device = setup_distributed()
+    log = print if rank == 0 else lambda *a, **k: None
+    if args.batch_size % world:
+        raise SystemExit(f"--batch-size {args.batch_size} must divide evenly across {world} GPUs")
+    local_batch = args.batch_size // world   # this process's slice of every step's batch
     args.precision = resolve_precision(args, device)
     os.makedirs(args.out, exist_ok=True)
 
@@ -214,9 +266,10 @@ def main():
     train_idx = train_idx[use[source[train_idx].long()]]    # train only on the chosen sources
     val_used = use[source[val_idx].long()]                   # val positions from those sources
     val_subset = val_idx[val_used][:args.val_subset]         # for --val-every
-    print(f"training on {', '.join(args.sources)}: {len(train_idx):,} train / "
-          f"{val_used.sum().item():,} val (+{(~val_used).sum().item():,} val from other sources), "
-          f"device {device}, {args.precision}")
+    gpus = f"{world} GPUs, {local_batch} positions each per step" if world > 1 else f"device {device}"
+    log(f"training on {', '.join(args.sources)}: {len(train_idx):,} train / "
+        f"{val_used.sum().item():,} val (+{(~val_used).sum().item():,} val from other sources), "
+        f"{gpus}, {args.precision}")
 
     overrides = {k: v for k, v in dict(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads,
                                        d_ff=args.d_ff, dropout=args.dropout).items() if v is not None}
@@ -225,11 +278,16 @@ def main():
             raise SystemExit("--spatial-bias needs --arch v3")
         overrides["spatial_bias"] = True
     model = MODELS[args.arch](**overrides).to(device)
-    print(f"{type(model).__name__} {model.config}: {sum(p.numel() for p in model.parameters()):,} parameters")
+    log(f"{type(model).__name__} {model.config}: {sum(p.numel() for p in model.parameters()):,} parameters")
+    if world > 1:
+        torch.manual_seed(args.seed + rank)   # different dropout per GPU; DDP copies rank 0's weights
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     steps_per_epoch = len(train_idx) // args.batch_size   # drop the ragged last batch
+    # model stays the bare module (checkpoints, validation); forward averages gradients across GPUs
     forward = torch.compile(model) if args.compile and device.type == "cuda" else model
+    if world > 1:
+        forward = DistributedDataParallel(forward, device_ids=[device.index])
     total_steps = steps_per_epoch * args.epochs
 
     def lr_at(step):   # linear warmup, then cosine decay to 10%
@@ -253,11 +311,12 @@ def main():
         curve = ckpt.get("curve", [])
         if ckpt.get("step") is not None:   # saved mid-epoch
             start_epoch, start_step = ckpt["epoch"], ckpt["step"]
-            print(f"Resumed from {args.resume} (epoch {start_epoch}, step {start_step}/{steps_per_epoch})")
+            log(f"Resumed from {args.resume} (epoch {start_epoch}, step {start_step}/{steps_per_epoch})")
         else:
             start_epoch = ckpt["epoch"] + 1
-            print(f"Resumed from {args.resume} (after epoch {ckpt['epoch']})")
+            log(f"Resumed from {args.resume} (after epoch {ckpt['epoch']})")
 
+    args.wandb = args.wandb and rank == 0
     if args.wandb:
         import wandb
         wandb.init(project="slackfish-nofeat", config=vars(args))
@@ -283,9 +342,13 @@ def main():
 
     def save(ckpt, name):   # write then rename, so a crash mid-save can't corrupt the file
         path = os.path.join(args.out, name)
-        torch.save(ckpt, path + ".tmp")
-        os.replace(path + ".tmp", path)
+        if rank == 0:
+            torch.save(ckpt, path + ".tmp")
+            os.replace(path + ".tmp", path)
         return path
+
+    def validate(idx, mirror=False):
+        return evaluate(model, squares, castling, turn, targets, idx, args, device, mirror, world, rank)
 
     if args.target == "winprob":   # soft-label BCE: target is a probability, prediction a logit
         criterion = lambda pred, y: nn.functional.binary_cross_entropy_with_logits(pred, torch.sigmoid(y))
@@ -299,15 +362,16 @@ def main():
         first = start_step if epoch == start_epoch else 0
         running, t0 = 0.0, time.time()
         bar = tqdm(range(first, steps_per_epoch), desc=f"epoch {epoch}/{args.epochs}",
-                   initial=first, total=steps_per_epoch)
+                   initial=first, total=steps_per_epoch, disable=rank != 0)
         for step in bar:
-            b = order[step * args.batch_size:(step + 1) * args.batch_size]
+            lo = step * args.batch_size + rank * local_batch   # this GPU's slice of the step's batch
+            b = order[lo:lo + local_batch]
             sq = batch_squares(squares, b, device)
             ca = castling[b].to(device, non_blocking=True).long()
             tu = turn[b].to(device, non_blocking=True).long()
             y = targets[b].to(device, non_blocking=True)
             if args.augment_prob > 0:
-                m = swap[step * args.batch_size:(step + 1) * args.batch_size].to(device, non_blocking=True)
+                m = swap[lo:lo + local_batch].to(device, non_blocking=True)
                 msq, mca, mtu = mirror_tokens(sq, ca, tu)
                 sq = torch.where(m[:, None], msq, sq)
                 ca = torch.where(m, mca, ca)
@@ -327,31 +391,33 @@ def main():
             scheduler.step()
 
             if step % 10 == 0:   # .item() syncs with the GPU, so don't do it every step
-                running = 0.9 * running + 0.1 * loss.item() if running else loss.item()
+                step_loss = loss.detach()
+                if world > 1:   # the whole batch's loss, not just this GPU's slice
+                    dist.all_reduce(step_loss, op=dist.ReduceOp.AVG)
+                running = 0.9 * running + 0.1 * step_loss.item() if running else step_loss.item()
             if step % 50 == 0:
                 bar.set_postfix(loss=f"{running:.4f}", lr=f"{scheduler.get_last_lr()[0]:.1e}")
                 if args.wandb:
                     wandb.log({"train_loss": running, "lr": scheduler.get_last_lr()[0]})
             if args.val_every and (step + 1) % args.val_every == 0 and step + 1 < steps_per_epoch:
-                sq_err, cp_err = val_metrics(*evaluate(model, squares, castling, turn, targets, val_subset,
-                                                       args, device), args)
+                sq_err, cp_err = val_metrics(*validate(val_subset), args)
                 sub_source = source[val_subset]
                 by_source = {name: cp_err[sub_source == i].mean().item()
                              for i, name in enumerate(source_names) if (sub_source == i).any()}
                 curve.append({"epoch": epoch, "step": step + 1, "train_loss": running,
                               "val_mse": sq_err.mean().item(), "val_mae_cp": cp_err.mean().item(),
                               "val_mae_cp_by_source": by_source})
-                tqdm.write(f"step {step + 1}: train {running:.4f}  val subset MSE {curve[-1]['val_mse']:.4f}  "
-                           f"MAE {curve[-1]['val_mae_cp']:.0f} cp  ("
-                           + "  ".join(f"{k} {v:.0f}" for k, v in by_source.items()) + ")")
+                if rank == 0:
+                    tqdm.write(f"step {step + 1}: train {running:.4f}  val subset MSE {curve[-1]['val_mse']:.4f}  "
+                               f"MAE {curve[-1]['val_mae_cp']:.0f} cp  ("
+                               + "  ".join(f"{k} {v:.0f}" for k, v in by_source.items()) + ")")
                 if args.wandb:
                     wandb.log({"val_subset_mse": curve[-1]["val_mse"], "val_subset_mae_cp": curve[-1]["val_mae_cp"]})
             if args.save_every and (step + 1) % args.save_every == 0 and step + 1 < steps_per_epoch:
                 save(checkpoint(epoch, step + 1), "last.pt")
 
-        sq_err, cp_err = val_metrics(*evaluate(model, squares, castling, turn, targets, val_idx, args, device), args)
-        _, mirror_cp_err = val_metrics(*evaluate(model, squares, castling, turn, targets, val_idx[val_used],
-                                                 args, device, mirror=True), args)
+        sq_err, cp_err = val_metrics(*validate(val_idx), args)
+        _, mirror_cp_err = val_metrics(*validate(val_idx[val_used], mirror=True), args)
         val_mse = sq_err[val_used].mean().item()
         val_mae_cp = cp_err[val_used].mean().item()
         mirror_mae_cp = mirror_cp_err.mean().item()
@@ -361,9 +427,9 @@ def main():
         history.append({"epoch": epoch, "train_loss": running, "val_mse": val_mse, "val_mae_cp": val_mae_cp,
                         "val_mirror_mae_cp": mirror_mae_cp, "val_mae_cp_by_source": by_source})
         per_source = "  ".join(f"{k}{'' if k in args.sources else '*'} {v:.0f}" for k, v in by_source.items())
-        print(f"epoch {epoch}: train {running:.4f}  val MSE {val_mse:.4f}  val MAE {val_mae_cp:.0f} cp  "
-              f"mirrored {mirror_mae_cp:.0f} cp  ({time.time() - t0:.0f}s)\n"
-              f"  MAE by source: {per_source}   (* = not trained on)")
+        log(f"epoch {epoch}: train {running:.4f}  val MSE {val_mse:.4f}  val MAE {val_mae_cp:.0f} cp  "
+            f"mirrored {mirror_mae_cp:.0f} cp  ({time.time() - t0:.0f}s)\n"
+            f"  MAE by source: {per_source}   (* = not trained on)")
         if args.wandb:
             wandb.log({"epoch": epoch, "val_mse": val_mse, "val_mae_cp": val_mae_cp,
                        "val_mirror_mae_cp": mirror_mae_cp,
@@ -374,7 +440,10 @@ def main():
         ckpt = checkpoint(epoch)
         save(ckpt, "last.pt")
         if is_best:
-            print(f"  new best -> {save(ckpt, 'best.pt')}")
+            log(f"  new best -> {save(ckpt, 'best.pt')}")
+
+    if world > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
