@@ -254,6 +254,12 @@ LMR_MIN_DEPTH = 2   # late move reductions from this depth up, after the first L
 # and solves as many WAC tactics, 86/100 at depth 3, as from 3 in half the time)
 LMR_FULL = 3
 HISTORY_CP = 30.0   # ordering bonus (cp) for the quiet move with the most history; others scaled
+# Pruning margins in centipawns (0 turns one off). Depth-1 nodes send all their children to
+# the network and were ~94% of all evaluations, so these skip children that can't matter.
+FUTILITY_MARGIN = 150   # depth 1: skip quiet moves when this far below what the side needs
+RFP_MARGIN = 150        # depth <= RFP_MAX_DEPTH: stop when this much per ply above it (reverse futility)
+RFP_MAX_DEPTH = 2
+DELTA_MARGIN = 200      # quiescence: skip a capture that can't get within this of alpha
 
 
 def _to_tt(score, ply):
@@ -263,6 +269,28 @@ def _to_tt(score, ply):
 
 def _from_tt(score, ply):
     return score - ply if score > MATE_BOUND else score + ply if score < -MATE_BOUND else score
+
+
+def _queen_first(order, moves):
+    """Move order with each queen promotion just ahead of the other promotions on its
+    square. The root search keeps the first of equally scored moves (a later move
+    has to beat it), so when the promoted piece is lost at once anyway and every
+    promotion scores the same, this makes it promote to a queen, not whichever
+    piece happened to be searched first."""
+    first = {}   # (from, to) -> position in order of that promotion's first appearance
+    for pos, i in enumerate(order):
+        if moves[i].promotion:
+            first.setdefault((moves[i].from_square, moves[i].to_square), pos)
+    if not first:
+        return order
+    def key(item):
+        pos, i = item
+        m = moves[i]
+        if not m.promotion:
+            return (pos, 0)
+        # all promotions on a square sit where the first of them was, queen first
+        return (first[m.from_square, m.to_square], m.promotion != chess.QUEEN, pos)
+    return [i for _, i in sorted(enumerate(order), key=key)]
 
 
 def good_captures(board: chess.Board):
@@ -442,6 +470,10 @@ class Bot:
         self.check_extensions = 2    # extend checking moves by a ply, at most this many per line (0 = off)
         self.null_min_depth = NULL_MIN_DEPTH   # remaining depth from which null move / LMR apply
         self.lmr_min_depth = LMR_MIN_DEPTH
+        self.futility_margin = FUTILITY_MARGIN
+        self.rfp_margin = RFP_MARGIN
+        self.rfp_max_depth = RFP_MAX_DEPTH
+        self.delta_margin = DELTA_MARGIN
         self.killers: dict[int, list] = {}   # ply -> up to 2 quiet moves that caused a cutoff
         self.history: dict[tuple, float] = {}   # (from, to) -> cutoff credit (depth squared)
         self._deadline = None   # time.monotonic() when a timed search must stop
@@ -522,13 +554,14 @@ class Bot:
         board = board.copy()
         moves, statics, terminal = self._score_children(board, ply=1)
         sign = 1 if board.turn == chess.WHITE else -1
-        order = list(np.argsort(-sign * statics, kind="stable"))
+        order = _queen_first(list(np.argsort(-sign * statics, kind="stable")), moves)
         timed = self.movetime is not None
         if max_depth is None:
             max_depth = MAX_DEPTH if timed else self.depth
         result, first, self._can_time_out = None, 1, False
         if resume is not None:
             _, scores, depth, order = resume
+            order = _queen_first(order, moves)
             result, self.last_search, first = (moves, scores), resume, depth + 1
             self.last_depth, self._can_time_out = depth, True
             if timed and self._settled(moves, scores, sign):
@@ -545,7 +578,7 @@ class Bot:
                 if not self._timed_out():
                     raise   # stopped from outside: undo, new game, flag or the end of pondering
                 break   # out of time: keep the last finished iteration
-            order = sorted(order, key=lambda i: -sign * bounds[i])   # best move first next time
+            order = _queen_first(sorted(order, key=lambda i: -sign * bounds[i]), moves)   # best move first next time
             result, self.last_depth, self._can_time_out = (moves, scores), depth, True
             self.last_search = (moves, scores, depth, order)
             took.append(time.monotonic() - started)
@@ -553,6 +586,7 @@ class Bot:
                     self._deadline is not None and self._deadline - time.monotonic() < self._next_iteration(took, depth + 1))):
                 break
         self._can_time_out = False
+        self.last_iteration_secs = took   # for Engine/timebench.py
         return result
 
     @staticmethod
@@ -719,7 +753,12 @@ class Bot:
         - PVS: moves after the first get a zero-window search, which only proves
           they're no better; one that is gets a full re-search
         - LMR: late quiet moves are first searched a ply shallower (two when very
-          late), and re-searched at full depth only if they look better"""
+          late), and re-searched at full depth only if they look better
+        - reverse futility (depth <= rfp_max_depth): so far above the bound that a shallow
+          search won't change it, return the network score
+        - futility (depth 1): so far below what it needs that a quiet move can't
+          make it up, only captures, promotions, checks and the TT move get scored;
+          depth-1 nodes are where almost all network evaluations happen"""
         if (self._abort is not None and self._abort()) or self._timed_out():
             raise SearchAborted
         if depth <= 0:
@@ -739,6 +778,11 @@ class Bot:
         sign = 1 if maximizing else -1
         in_check = board.is_check()
         bound_value = beta if maximizing else alpha   # what the side to move needs to reach
+        needed = alpha if maximizing else beta        # what it must beat to improve its score
+        quiet_position = not in_check and abs(bound_value) < MATE_BOUND and abs(needed) < MATE_BOUND
+        if (self.rfp_margin and depth <= self.rfp_max_depth and quiet_position
+                and sign * static - self.rfp_margin * depth >= sign * bound_value):
+            return static   # reverse futility: so far ahead that a shallow search won't change it
         if (self.use_null_move and null_ok and depth >= self.null_min_depth and not in_check
                 and abs(bound_value) < MATE_BOUND and sign * static >= sign * bound_value
                 and self._has_pieces(board, board.turn)):
@@ -751,7 +795,18 @@ class Bot:
                 return bound_value   # don't trust a null-move score as exact, or a mate from it
 
         alpha0, beta0 = alpha, beta
-        moves, statics, terminal = self._score_children(board, ply + 1)
+        floor = None   # mover-side bound on the moves futility pruning skipped
+        if self.futility_margin and depth == 1 and quiet_position and sign * static + self.futility_margin <= sign * needed:
+            # Futility: a quiet move can't gain futility_margin in one ply, so only
+            # captures, promotions, checks and the TT move are worth a network call
+            moves = [m for m in board.legal_moves if board.is_capture(m) or m.promotion
+                     or m == tt_move or board.gives_check(m)]
+            floor = sign * static + self.futility_margin
+            if not moves:
+                return sign * floor   # an upper bound for the side to move, at most what it needed
+            moves, statics, terminal = self._score_children(board, ply + 1, moves)
+        else:
+            moves, statics, terminal = self._score_children(board, ply + 1)
         killers = self.killers.get(ply, ()) if self.use_killers else ()
         hist_max = max(self.history.values(), default=0.0) if self.use_history else 0.0
 
@@ -766,7 +821,8 @@ class Bot:
             return -sign * statics[i] - bonus
         order = sorted(range(len(moves)), key=priority)
 
-        best, best_move = -sign * float('inf'), None
+        # Skipped futile moves are worth at most the floor, so the result can't be below it
+        best, best_move = (-sign * float('inf') if floor is None else sign * floor), None
         for n, i in enumerate(order):
             m = moves[i]
             if terminal[i]:
@@ -861,6 +917,11 @@ class Bot:
                     return static
                 beta = min(beta, static)
             moves = good_captures(board)
+            if self.delta_margin:   # delta pruning: even winning the piece can't reach alpha
+                target = sign * (alpha if maximizing else beta)
+                moves = [m for m in moves if sign * static + self.delta_margin + 100 * (
+                    (PIECE_VALUES[chess.PAWN] if board.is_en_passant(m) else PIECE_VALUES.get(board.piece_type_at(m.to_square), 0))
+                    + (8 if m.promotion else 0)) > target]
             if not moves:
                 return static
 

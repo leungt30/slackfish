@@ -147,6 +147,13 @@ scripts/lichess-bot.sh stop                      # once the current game ends (-
 
 On its clock it spends about 1/12 of its remaining time plus the increment per move (1/20 for clocks under 3 minutes, whoever started the game; `--moves-left N` overrides it), searching as deep as that allows, and ponders the opponent's 5 likeliest replies on their time. A pondered reply that reached the `:DEPTH` of `--bot` (5 in the script, 4 in its bullet preset) is played instantly. The header of `scripts/lichess-bot.sh` explains every setting and how to adjust it, written so another assistant can operate the bot. With 7 pieces or fewer it plays the perfect move from [Lichess's endgame tablebase](https://tablebase.lichess.ovh) instead of searching, so won endings get converted (the search alone once shuffled checks with king and queen until a threefold repetition). It accepts a draw offer only when its own evaluation is under +0.10, and resumes a game in progress after a restart or a dropped connection. `--stockfish 1,2,3` challenges Lichess's own Stockfish levels instead (always casual). Setup (a new account, its token in `.lichess_token`, and `lichess.py upgrade`) is in the docstring of `Engine/lichess.py`.
 
+`Engine/clockreport.py` shows how both sides used their clocks in its games: each player's normal time per move early on against its last moves, and whether a slowdown was forced by the clock ("clock-limited": it kept spending the same share of a shrinking clock, or started rushing with under a quarter of its time left), was instant pondered replies, or was by choice. It sums this up per opponent, with the bot's score when the opponent was clock-limited. `--plot DIR` saves a chart of both clocks and the seconds per move for each game.
+
+```bash
+uv run python Engine/clockreport.py --max 20 --perf blitz         # the bot's last 20 blitz games (uses .lichess_token)
+uv run python Engine/clockreport.py https://lichess.org/rs8O1zUO --plot clocks/   # any game, no token needed
+```
+
 ### Search depth
 
 - **Depth 1** scores every legal move with the model and plays the best one. This is how the original scripts played.
@@ -155,6 +162,13 @@ On its clock it spends about 1/12 of its remaining time plus the increment per m
 - On top of plain alpha-beta: principal variation search, null-move pruning, late move reductions, killer and history move ordering, and check extensions (see `Bot._search`). Together they made depth 4 about 4.7x faster with the same moves, and at 9 s per move the bot now avoids 9 of the 11 blunders that lost it games on Lichess, against 2 before (`Engine/searchbench.py`, which also runs the Win At Chess tactics).
 
 Rough speed for v2 on an RTX 500 laptop GPU in the opening: depth 1 is instant, depth 2 about 0.1s, and depth 3 about 1.5–3s per move. Each extra ply multiplies the cost by roughly the number of legal moves. Feature engineering (`featureEng.py`) is the bottleneck, not the network.
+
+**Timed search.** On a clock (`Engine/lichess.py`, the GUI's bot clock) the bot deepens one depth at a time and only starts the next if it's predicted to finish in the time left, from the last depth's time and a minimum growth per depth (`GROWTH` in `Engine/bots.py`). `Engine/timebench.py` measures how long each depth takes on 25 fixed positions (`Engine/data/timing.fen`) and replays those decisions for different time budgets and floors, so the floors can be checked on each machine the bot plays from:
+
+```bash
+uv run python Engine/timebench.py --save times.json --floors 5=4,6=3   # ~4 min on an RTX 2080 Ti
+uv run python Engine/timebench.py --load times.json --floors 5=3,6=2.5   # re-simulate saved timings
+```
 
 ### Using it from Python
 
@@ -481,6 +495,7 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 | **Iteration cost** (a timed search deepening to depth 5–6) | Uneven between odd and even depths: depth 3 → 4 cost 15–18× in middlegames, 2 → 3 only 1–2.5×. A time manager that assumed "like the last step" started depth 4 with ~7 s of a 9 s budget left and threw it away unfinished; predicting each step from the same step two depths back (with per-depth minimums) cut middlegame moves from 8.7 s to ~1 s at the same depth. |
 | **PVS, null move, LMR, killer/history ordering, check extensions** (`Bot._search`) | Depth 4 on four positions: 73.4 s → 15.6 s (171k → 33k evals), identical moves. With null move and LMR from depth 3 instead of 2 it was only 33.2 s, and no better than the old search under a time limit. |
 | **The same, on test positions** (`Engine/searchbench.py`) | The 11 decisive blunders from slackfish-bot's Lichess losses, at 9 s per move: 2 avoided by the old search, 9 by the new one (mean depth 3.33 → 4.08); at 3 s: 2 → 5. Win At Chess (first 100): 82 → 86 solved at depth 3, in less time; 84 → 88 at 3 s per move. Depth 4 alone fixes 10 of the 11, so these were horizon mistakes. |
+| **Futility, reverse futility and delta pruning** (t2-sb-w-lichess, margins 150 / 150 / 200 cp) | 94% of network evals came from depth-1 nodes scoring all their children. Depth 4 on four positions: 10.2 s → 5.8 s (29.9k → 17.4k evals), identical moves; reverse futility did most of it. Timed: blunders avoided at 9 s 8 → 11 of 11, WAC at 3 s 89 → 92 with mean depth 3.17 → 4.05. At fixed depth 3, WAC 88 → 86 in 43 s instead of 105. Tighter margins (100, 75) went deeper but lost more WAC positions. |
 | **Endgame conversion** (K+Q+P vs K+P, mate in 10, drawn by threefold repetition on Lichess) | The search scored repetition as a draw only on the third occurrence, and transposition-table entries from earlier said "winning", so it let the opponent repeat. Scoring a second occurrence as a draw, it mates a random defender in 55 moves; with Lichess tablebase moves (7 pieces or fewer), in 7. |
 
 ### What we learned
@@ -509,6 +524,8 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── play.py              # Game runner + CLI (bot/human vs bot/human)
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
 │   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
+│   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
+│   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
 │   ├── export.py            # Game -> animated GIF / final-position PNG
 │   ├── GameLoop.py          # Legacy, broken (see below)
 │   ├── BotVsBot.py          # Legacy, needs V5 weights
