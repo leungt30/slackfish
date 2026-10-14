@@ -17,7 +17,13 @@ Checkpoints (model, optimizer, config, losses) go to --out: last.pt after every
 epoch and every --save-every steps within one, best.pt when validation loss
 improves. --resume picks up at the exact step it stopped (each epoch's shuffle
 is seeded, so the order is reproduced). Resuming with a larger --epochs
-stretches the cosine LR schedule to the new length.
+stretches the LR schedule to the new length.
+
+LR schedule: linear warmup over --warmup-steps, then down to --lr-floor x --lr by
+the last step, either along a cosine (--schedule cosine, the default) or, with
+--schedule wsd (warmup-stable-decay), flat at --lr and then a straight line over
+the last --decay-frac of the steps. A WSD run resumed with a larger --epochs
+before its decay starts carries on as if it had been planned that long.
 
 Augmentation: each training position is colour-swapped (board mirrored, colours,
 castling and turn swapped, target negated) with probability --augment-prob, so
@@ -85,6 +91,12 @@ def parse_args():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
     p.add_argument("--warmup-steps", type=int, default=2000)
+    p.add_argument("--schedule", choices=["cosine", "wsd"], default="cosine",
+                   help="after warmup: cosine decay, or wsd (warmup-stable-decay: flat, then a linear decay)")
+    p.add_argument("--decay-frac", type=float, default=0.2,
+                   help="wsd: decay over this last fraction of all steps (default 0.2)")
+    p.add_argument("--lr-floor", type=float, default=0.1,
+                   help="final LR as a fraction of --lr (default 0.1)")
     p.add_argument("--target", choices=["cp", "winprob"], default="cp",
                    help="regress clipped centipawns (cp) or win probability (winprob)")
     p.add_argument("--clip", type=float, default=1500, help="clip cp targets (and reported MAE) to +-CLIP")
@@ -290,11 +302,16 @@ def main():
         forward = DistributedDataParallel(forward, device_ids=[device.index])
     total_steps = steps_per_epoch * args.epochs
 
-    def lr_at(step):   # linear warmup, then cosine decay to 10%
+    def lr_at(step):   # linear warmup, then cosine or WSD decay to --lr-floor (multiples of --lr)
         if step < args.warmup_steps:
             return (step + 1) / args.warmup_steps
+        floor = args.lr_floor
+        if args.schedule == "wsd":   # flat at --lr, then linear decay over the last --decay-frac of steps
+            decay_start = total_steps - max(1, round(args.decay_frac * total_steps))
+            progress = (step - decay_start) / max(1, total_steps - decay_start)
+            return 1.0 - (1 - floor) * min(1.0, max(0.0, progress))
         progress = (step - args.warmup_steps) / max(1, total_steps - args.warmup_steps)
-        return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
+        return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_at)
     scaler = torch.amp.GradScaler(device.type, enabled=args.precision == "fp16")   # fp16 needs loss scaling
 
