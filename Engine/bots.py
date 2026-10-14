@@ -271,6 +271,28 @@ def _from_tt(score, ply):
     return score - ply if score > MATE_BOUND else score + ply if score < -MATE_BOUND else score
 
 
+def _queen_first(order, moves):
+    """Move order with each queen promotion just ahead of the other promotions on its
+    square. The root search keeps the first of equally scored moves (a later move
+    has to beat it), so when the promoted piece is lost at once anyway and every
+    promotion scores the same, this makes it promote to a queen, not whichever
+    piece happened to be searched first."""
+    first = {}   # (from, to) -> position in order of that promotion's first appearance
+    for pos, i in enumerate(order):
+        if moves[i].promotion:
+            first.setdefault((moves[i].from_square, moves[i].to_square), pos)
+    if not first:
+        return order
+    def key(item):
+        pos, i = item
+        m = moves[i]
+        if not m.promotion:
+            return (pos, 0)
+        # all promotions on a square sit where the first of them was, queen first
+        return (first[m.from_square, m.to_square], m.promotion != chess.QUEEN, pos)
+    return [i for _, i in sorted(enumerate(order), key=key)]
+
+
 def good_captures(board: chess.Board):
     """Captures worth searching in quiescence, plus queen promotions. A capture is
     skipped when it gives up a more valuable piece on a defended square (a cheap
@@ -532,13 +554,14 @@ class Bot:
         board = board.copy()
         moves, statics, terminal = self._score_children(board, ply=1)
         sign = 1 if board.turn == chess.WHITE else -1
-        order = list(np.argsort(-sign * statics, kind="stable"))
+        order = _queen_first(list(np.argsort(-sign * statics, kind="stable")), moves)
         timed = self.movetime is not None
         if max_depth is None:
             max_depth = MAX_DEPTH if timed else self.depth
         result, first, self._can_time_out = None, 1, False
         if resume is not None:
             _, scores, depth, order = resume
+            order = _queen_first(order, moves)
             result, self.last_search, first = (moves, scores), resume, depth + 1
             self.last_depth, self._can_time_out = depth, True
             if timed and self._settled(moves, scores, sign):
@@ -555,7 +578,7 @@ class Bot:
                 if not self._timed_out():
                     raise   # stopped from outside: undo, new game, flag or the end of pondering
                 break   # out of time: keep the last finished iteration
-            order = sorted(order, key=lambda i: -sign * bounds[i])   # best move first next time
+            order = _queen_first(sorted(order, key=lambda i: -sign * bounds[i]), moves)   # best move first next time
             result, self.last_depth, self._can_time_out = (moves, scores), depth, True
             self.last_search = (moves, scores, depth, order)
             took.append(time.monotonic() - started)
