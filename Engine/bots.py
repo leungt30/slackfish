@@ -213,6 +213,18 @@ class Evaluator:
 # Search
 # ---------------------------------------------------------------------------
 
+def position_key(board: chess.Board) -> int:
+    """Key for the caches, transposition table and pondered results: the position
+    (pieces, side to move, castling, en passant), not how it was reached.
+
+    hash(board._transposition_key()) alone collides: Python hashes an int modulo
+    2**61 - 1, so a bitboard with a piece on a1 (bit 0) hashes like one with it on f8
+    (bit 61), and likewise b1/g8 and c1/h8. Adding each bitboard's top 32 bits makes
+    the hashed tuple identify the position (a1 vs f8 crashed pondering in a game)."""
+    key = board._transposition_key()
+    return hash(key + tuple(bb >> 32 for bb in key[:8]))
+
+
 def terminal_score(board: chess.Board, ply: int):
     """White-perspective score if the game is over, else None. Faster mates score higher.
 
@@ -244,10 +256,15 @@ PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, 
 EXACT, LOWER, UPPER = 0, 1, 2   # transposition table bound types
 MATE_BOUND = MATE_SCORE - 1000  # scores beyond this are mates, stored relative to the node
 MAX_DEPTH = 64   # iterative deepening limit for a bot on a time budget (movetime)
-PONDER_REPLIES = 5   # opponent replies a bot on a time budget ponders on
+# Opponent replies a bot on a time budget ponders on together. 3 beat 5 at 1+1 and 3+2 on
+# Lichess: pondering got a depth deeper, ~47% of moves were instant instead of 26-30%, and it
+# finished with more clock, for 4-11 points less hit rate (Engine/ponderstats.py; README)
+PONDER_REPLIES = 3
 # Least assumed time ratio of an iteration to the one before, by the depth it reaches
-# (measured with the pruning in _search; deeper ones alternate even 6x / odd 8x)
-GROWTH = {2: 12.0, 3: 3.0, 4: 6.0}
+# (measured with the pruning in _search; deeper ones alternate even 6x / odd 8x).
+# 5 and 6: Engine/timebench.py on an RTX 2080 Ti measured 4->5 at median 3.5x (p90 7.4x)
+# and 5->6 at 2.1x (p90 4.1x); 8x / 6x left most of a blitz budget unused.
+GROWTH = {2: 12.0, 3: 3.0, 4: 6.0, 5: 4.0, 6: 3.0}
 NULL_WINDOW = 1.0   # centipawns: the width of a zero-window (PVS, null move, LMR) search
 NULL_MIN_DEPTH = 2  # null-move pruning from this depth up, reducing by NULL_R (+1 from depth 6)
 NULL_R = 2
@@ -382,7 +399,7 @@ class Ponder:
         a search of board already running is left to complete (setting cancel
         aborts it). With one, everything stops at once: the bot's search carries on
         from the deepest pondered result for board instead (see Bot._ponder)."""
-        self.keep = None if board is None or self.bot.movetime is not None else hash(board._transposition_key())
+        self.keep = None if board is None or self.bot.movetime is not None else position_key(board)
         self.cancel = cancel
         self.stop.set()
         self.thread.join()
@@ -434,7 +451,7 @@ class Bot:
     finish in the time left (from how much each iteration grew over the last; an
     unfinished one is wasted), and it stops early on a forced mate or a single
     legal move. Pondering then has no depth limit either: it
-    deepens the opponent's PONDER_REPLIES likeliest replies together, a depth at a
+    deepens the opponent's ponder_replies (PONDER_REPLIES) likeliest replies together, a depth at a
     time, until they move. If they play one of them and it reached self.depth
     there, the bot plays that pondered move at once, using none of its time.
     Otherwise its search starts from the deepest depth it finished there.
@@ -462,6 +479,15 @@ class Bot:
         self.cache_hits = 0   # positions answered from the cache in the last search
         self.pondered: dict[tuple, tuple] = {}   # (position, margin) -> (moves, scores) from pondering
         self.last_pondered = False   # whether the last search() used a pondered result
+        # Ponder statistics: the opponent's likely replies ranked by the last pondering
+        # (position key -> rank, 1 = likeliest; all of them, not only the ones searched),
+        # how many were searched, and for the last search() (rank or None if the move
+        # wasn't ranked, replies searched, depth pondering reached on it or None), or
+        # None when there was no pondering before it
+        self.ponder_ranks: dict[int, int] = {}
+        self.ponder_searched = 0
+        self.ponder_replies = PONDER_REPLIES   # replies pondered together on a time budget
+        self.last_ponder = None
         self._abort = None    # callable checked at every node; True stops the search
         # Search techniques (see _search), each switchable for benchmarking
         self.use_pvs = True          # zero-window search for moves after the first, re-search if better
@@ -522,6 +548,7 @@ class Bot:
 
     def _search_root(self, board):
         self.last_book = self.last_pondered = False
+        self.last_ponder = None
         if self.book is not None:
             move = self.book.pick(board, self.rng)
             if move is not None:
@@ -561,6 +588,8 @@ class Bot:
         if max_depth is None:
             max_depth = MAX_DEPTH if timed else self.depth
         result, first, self._can_time_out = None, 1, False
+        if resume is not None and set(resume[0]) != set(moves):
+            resume = None   # a result for another position (a stale pondering entry): search afresh
         if resume is not None:
             _, scores, depth, order = resume
             order = _queen_first(order, moves)
@@ -666,7 +695,14 @@ class Bot:
         return None if self.sample_margin is None else self.sample_margin * temperature
 
     def _root_scores_or_pondered(self, board, margin):
-        key = (hash(board._transposition_key()), margin)
+        key = (position_key(board), margin)
+        if self.ponder_ranks:   # pondering ran on the opponent's time: which of its replies was this?
+            rank = self.ponder_ranks.get(key[0])
+            searched = self.pondered.get(key)
+            self.last_ponder = (rank, self.ponder_searched, None if searched is None else searched[2])
+            self.ponder_ranks = {}
+        if key in self.pondered and set(self.pondered[key][0]) != set(board.legal_moves):
+            del self.pondered[key]   # a result for another position: never play a move from it
         if key in self.pondered:
             self.last_pondered = True
             resume = self.pondered.pop(key)
@@ -689,16 +725,17 @@ class Bot:
         """Search the bot's reply to the opponent's moves, the opponent's likeliest
         moves first: the transposition table's best move, then by network score
         from the opponent's side. Without a time budget, each reply in turn is
-        searched to self.depth. With one, the PONDER_REPLIES likeliest replies are
+        searched to self.depth. With one, the ponder_replies likeliest replies are
         deepened together, a depth at a time, with no limit."""
         self.pondered = {}
+        self.ponder_ranks, self.ponder_searched = {}, 0
         self._abort = handle.aborted
         margin = self._margin(self.temperature)
         try:
             moves, statics, _ = self._score_children(board, ply=1)
             sign = 1 if board.turn == chess.WHITE else -1
             order = sorted(range(len(moves)), key=lambda i: -sign * statics[i])
-            entry = self.tt.get(hash(board._transposition_key()))
+            entry = self.tt.get(position_key(board))
             if entry is not None and entry[3] in moves:
                 first = moves.index(entry[3])
                 order.remove(first)
@@ -707,8 +744,11 @@ class Bot:
             for i in order:
                 board.push(moves[i])
                 if not board.is_game_over(claim_draw=True) and not (self.book and self.book.covers(board)):
-                    replies.append((moves[i], hash(board._transposition_key())))
+                    replies.append((moves[i], position_key(board)))
                 board.pop()
+            self.ponder_ranks = {key: rank for rank, (_, key) in enumerate(replies, start=1)}
+            # the setting, not how many there were this time, so logs group by it (Engine/ponderstats.py)
+            self.ponder_searched = len(replies) if self.movetime is None else self.ponder_replies
             if self.movetime is None:
                 for move, key in replies:
                     if handle.stop.is_set():
@@ -720,7 +760,7 @@ class Bot:
                     handle.current = None
                     board.pop()
             else:
-                replies = replies[:PONDER_REPLIES]
+                replies = replies[:self.ponder_replies]
                 for depth in range(1, MAX_DEPTH + 1):
                     for move, key in replies:
                         board.push(move)
@@ -766,7 +806,7 @@ class Bot:
         if depth <= 0:
             return self._quiesce(board, alpha, beta, ply, static, 0)
 
-        key = hash(board._transposition_key())
+        key = position_key(board)
         entry = self.tt.get(key)
         tt_move = None
         if entry is not None:
@@ -886,7 +926,7 @@ class Bot:
 
     def _static(self, board):
         """Network score of board (cached), for the one position a null move creates."""
-        key = hash(board._transposition_key())
+        key = position_key(board)
         cached = self.cache.get(key)
         if cached is None:
             cached = float(self.evaluator.evaluate([board.copy(stack=False)])[0])
@@ -964,7 +1004,7 @@ class Bot:
             else:
                 # Pieces, side to move, castling and legal en passant: everything the
                 # models see. Hashed to an int to keep the cache small.
-                key = hash(board._transposition_key())
+                key = position_key(board)
                 cached = self.cache.get(key)
                 if cached is not None:
                     scores[i] = cached
