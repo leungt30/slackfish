@@ -67,6 +67,31 @@ scales the learning rate down with width).
 time each on the 2080 Ti). If the lower learning rate leads early on, scale the learning rate down
 with width for future large runs (roughly lr x 256 / d_model as a starting point).
 
+## Muon optimizer
+
+**Idea:** train the weight matrices with Muon instead of AdamW. Muon orthogonalizes each
+matrix's momentum (a few Newton-Schulz iterations) before stepping, so every direction of
+the update gets a similar step size; embeddings, biases and LayerNorm weights stay on AdamW.
+
+**Why:** it set the small-transformer "speedrun" records, reaching AdamW's loss in roughly
+1.3-2x fewer steps, and held up at larger scale. Our model is almost all 2-D matrices
+(attention and feed-forward), and full-data runs take ~20 h on the 2080 Ti, so fewer steps
+to the same accuracy is real time saved. It is also reported to need less learning-rate
+retuning across widths (the T3 problem, above).
+
+**Unknowns:** published results are mostly language models on clean data; our labels are
+noisy Stockfish evaluations. Newton-Schulz usually runs in bf16, and we train in fp16 on
+Turing (check it's stable, or run it in fp32: it's a few small matmuls per matrix per step).
+
+**How to test:** add `--optimizer {adamw,muon}` to `NoFeat/train.py` (`torch.optim.Muon` if
+our PyTorch has it, else a ~50-line reference implementation). Two runs on the same 50M
+sample (`--limit 50000000 --epochs 1`), same model and schedule (WSD, once the WSD training
+code from the 4-GPU machine is merged; add Muon after it to avoid conflicts): compare the
+learning curves, then a 128-game match if Muon gets there faster.
+
+**Also worth a look:** schedule-free AdamW (no schedule: built-in weight averaging, an
+alternative to WSD) and AdEMAMix (a second, slow momentum; helps long single-pass runs).
+
 ## Other ideas
 
 - Fewer heads at the current size: 6.41M model with `--heads 8` (head size 32) vs 16
