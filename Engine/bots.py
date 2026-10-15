@@ -175,6 +175,7 @@ BOTS = {
     "t3-w-lichess-14.4m": NoFeatSpec("Models/Weights/SlackFishV-T3-W-Lichess-14.4M"),   # V3, 14.4M, same data as t2-w-lichess; weaker (experiment record)
     "t2-sb-w-lichess-6.97m": NoFeatSpec("Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M"),   # V3 at V2 sizes + spatial attention bias, same data as t2-w-lichess
     "t2-sb-wsd-lichess-6.97m": NoFeatSpec("Models/Weights/SlackFishV-T2-SB-WSD-Lichess-6.97M"),   # as t2-sb-w-lichess, Lichess eval DB only, 4 GPUs, batch 2048, WSD schedule
+    "t2-sb-wsd-lichessgames-6.97m": NoFeatSpec("Models/Weights/SlackFishV-T2-SB-WSD-LichessGames-6.97M"),   # as t2-sb-wsd-lichess, + 435M positions from September 2026 Lichess games
 }
 
 

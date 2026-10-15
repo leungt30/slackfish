@@ -13,7 +13,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # 2. Install dependencies into .venv
 uv sync
 
-# 3. Play against the engine in the browser (default bot: t2-sb-w-lichess-6.97m at depth 3)
+# 3. Play against the engine in the browser (default bot: t2-sb-wsd-lichessgames-6.97m at depth 3)
 uv run python Engine/gui.py
 ```
 
@@ -32,8 +32,9 @@ uv run python Engine/gui.py
 | **t2-w-all-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-All-6.41M/` | Yes: as t2-w, plus tactics, 8 epochs, val MAE games 142 / random 171 / tactics 356 cp |
 | **t2-w-lichess-6.41m** | `NoFeat/model.py` (`ChessTransformerV2`) | `Models/Weights/SlackFishV-T2-W-Lichess-6.41M/` | Yes: as t2-w, plus tactics and 393M Lichess positions, 1 epoch, val MAE games 114 / random 155 / tactics 293 cp. Scored 126/128 against t2-w; about 2255 Elo on Stockfish's scale at depth 3 |
 | **t3-w-lichess-14.4m** | `NoFeat/model.py` (`ChessTransformerV3`) | `Models/Weights/SlackFishV-T3-W-Lichess-14.4M/` | Yes, but **weaker than t2-w-lichess and t2-sb** (kept as an experiment record): as t2-w-lichess but 14.4M params (width 384, 8 heads), val MAE games 114 / random 156 / tactics 288 cp. Scored 56.5/128 against t2-w-lichess (about −41 Elo) and evaluates ~1.6× slower |
-| **t2-sb-w-lichess-6.97m** (default) | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M/` | **Yes, strongest:** t2-w-lichess plus a learned per-head 66×66 attention bias, same data and settings, val MAE games 113 / random 152 / tactics 280 cp. Scored 68/128 against t2-w-lichess (about +22 Elo) |
-| **t2-sb-wsd-lichess-6.97m** | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-WSD-Lichess-6.97M/` | Yes, not yet matched against the default: t2-sb-w-lichess's architecture on the Lichess evaluation database only (393M positions), trained on 4× RTX 4090 in 2 h (batch 2048, lr 1.2e-3, WSD schedule to 1%), val MAE lichess 96.6 cp (t2-sb-w-lichess: 102.8 on its own split) |
+| **t2-sb-w-lichess-6.97m** | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M/` | Yes, the previous default: t2-w-lichess plus a learned per-head 66×66 attention bias, same data and settings, val MAE games 113 / random 152 / tactics 280 cp. Scored 68/128 against t2-w-lichess (about +22 Elo) |
+| **t2-sb-wsd-lichess-6.97m** | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-WSD-Lichess-6.97M/` | Yes, but weaker than t2-sb-wsd-lichessgames (−187 Elo at depth 2; about +115 over t2-sb-w-lichess by the chain): t2-sb-w-lichess's architecture on the Lichess evaluation database only (393M positions), trained on 4× RTX 4090 in 2 h (batch 2048, lr 1.2e-3, WSD schedule to 1%), val MAE lichess 96.6 cp (t2-sb-w-lichess: 102.8 on its own split) |
+| **t2-sb-wsd-lichessgames-6.97m** (default) | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-WSD-LichessGames-6.97M/` | **Yes, strongest:** as t2-sb-wsd-lichess plus 435M positions from analysed September 2026 Lichess games (828M in all), 4× RTX 4090 in 4.2 h, val MAE lichess 95.0 / lichess_games 94.6 cp. Scored 218/256 against t2-sb-w-lichess (about +303 Elo) and 191/256 against t2-sb-wsd-lichess (+187) at depth 2 |
 
 NoFeat model weights aren't stored in git: each folder in the repo holds only `config.json`, and the weights (`model.safetensors`) are downloaded from [Hugging Face](https://huggingface.co/mathemagicianz/slackfish) on first use (about 28 MB for the default bot). A local `model.safetensors`, or a training checkpoint `best.pt`, is used instead when present. See [Sharing models](#sharing-models).
 
@@ -63,7 +64,7 @@ Notes:
 ### In the browser (recommended for human vs bot)
 
 ```bash
-uv run python Engine/gui.py                              # opens http://localhost:8000, vs t2-sb-w-lichess-6.97m:3
+uv run python Engine/gui.py                              # opens http://localhost:8000, vs t2-sb-wsd-lichessgames-6.97m:3
 uv run python Engine/gui.py --bot t2-w-6.41m:2 --color black
 uv run python Engine/gui.py --temperature 50              # sample moves instead of always the best (centipawns)
 uv run python Engine/gui.py --book                       # bots open from the gm2001 book (also a menu in the page)
@@ -239,16 +240,22 @@ uv run python -m NoFeat.train --out /tmp/smoke --data data/nofeat_small.npz --ep
 uv run python -m NoFeat.train --arch v2 --target winprob --sources games random tactics lichess \
     --epochs 1 --batch-size 512 --dropout 0 --val-frac 0.005 --val-every 10000 --save-every 5000 \
     --data /data/slackfish/nofeat_all --out Models/Weights/SlackFishV-T2-W-Lichess-6.41M
-# t2-sb-w-lichess-6.97m (the default bot): the same run with V3 at V2's sizes plus the spatial attention bias
+# t2-sb-w-lichess-6.97m (the previous default bot): the same run with V3 at V2's sizes plus the spatial attention bias
 uv run python -m NoFeat.train --arch v3 --d-model 256 --heads 16 --d-ff 1024 --layers 8 --spatial-bias \
     --target winprob --sources games random tactics lichess \
     --epochs 1 --batch-size 512 --dropout 0 --val-frac 0.005 --val-every 10000 --save-every 5000 \
     --data /data/slackfish/nofeat_all --out Models/Weights/SlackFishV-T2-SB-W-Lichess-6.97M
-# Several GPUs: the same command under torchrun, one process per GPU (see Multiple GPUs below)
+# Several GPUs: the same command under torchrun, one process per GPU (see Multiple GPUs below).
+# t2-sb-wsd-lichess-6.97m: 4 GPUs, batch 2048, WSD schedule, Lichess evaluation database only (2 h on 4× RTX 4090)
 uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v3 --d-model 256 --heads 16 --d-ff 1024 \
-    --layers 8 --spatial-bias --target winprob --sources lichess --epochs 1 --batch-size 2048 \
-    --dropout 0 --val-frac 0.005 --val-every 10000 --save-every 5000 \
-    --data data/nofeat_lichess --out Models/Weights/SlackFishV-T2-SB-W-Lichess-4GPU
+    --layers 8 --spatial-bias --target winprob --dropout 0 --sources lichess --data data/nofeat_lichess \
+    --epochs 1 --batch-size 2048 --lr 1.2e-3 --warmup-steps 2000 --schedule wsd --decay-frac 0.2 --lr-floor 0.01 \
+    --val-frac 0.005 --val-every 10000 --save-every 5000 --out Models/Weights/SlackFishV-T2-SB-WSD-Lichess-6.97M
+# t2-sb-wsd-lichessgames-6.97m (the default bot): the same, plus a month of analysed Lichess games (4.2 h)
+uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v3 --d-model 256 --heads 16 --d-ff 1024 \
+    --layers 8 --spatial-bias --target winprob --dropout 0 --sources lichess lichess_games --data data/nofeat_lichess_all \
+    --epochs 1 --batch-size 2048 --lr 1.2e-3 --warmup-steps 2000 --schedule wsd --decay-frac 0.2 --lr-floor 0.01 \
+    --val-frac 0.005 --val-every 10000 --save-every 5000 --out Models/Weights/SlackFishV-T2-SB-WSD-LichessGames-6.97M
 
 # 2b. Export for play and sharing: model.safetensors + config.json next to best.pt
 uv run python -m NoFeat.export Models/Weights/SlackFishV-T3/best.pt
@@ -317,11 +324,11 @@ uv run python -m NoFeat.export --all     # every Models/Weights/*/best.pt -> mod
 
 Two machines were used:
 
-| | Laptop | Desktop |
-|---|---|---|
-| GPU | RTX 500 Ada (4 GB) | RTX 2080 Ti (11 GB, Turing, 250 W default / 280 W max power limit) |
-| CPU / RAM | | Intel i7-7700 (4 cores, 8 threads) / 31 GB |
-| Runs | T1-alpha, T1-3.25M, T2-6.41M, T2-W-6.41M, all search experiments | T2-W-All-6.41M, T2-W-Lichess-6.41M, T3-W-Lichess-14.4M, T2-SB-W-Lichess-6.97M, the 128-game matches and the Stockfish ratings |
+| | Laptop | Desktop | GPU server |
+|---|---|---|---|
+| GPU | RTX 500 Ada (4 GB) | RTX 2080 Ti (11 GB, Turing, 250 W default / 280 W max power limit) | 4× RTX 4090 (24 GB, Ada, 450 W limit, PCIe, no NVLink) |
+| CPU / RAM | | Intel i7-7700 (4 cores, 8 threads) / 31 GB | 16 cores, 32 threads / 125 GB |
+| Runs | T1-alpha, T1-3.25M, T2-6.41M, T2-W-6.41M, all search experiments | T2-W-All-6.41M, T2-W-Lichess-6.41M, T3-W-Lichess-14.4M, T2-SB-W-Lichess-6.97M, the 128-game matches and the Stockfish ratings | multi-GPU training, the batch size / LR sweep, T2-SB-WSD-Lichess-6.97M, T2-SB-WSD-LichessGames-6.97M, the 256-game matches |
 
 Three kinds of measurement:
 
@@ -331,7 +338,7 @@ Three kinds of measurement:
 
 ### Training runs
 
-All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine decay.
+All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine decay, except the WSD runs (batch 2048, lr 1.2e-3, warmup-stable-decay, 4 GPUs).
 
 | Model | Architecture | Training data | Target | Colour-swap | Epochs | Time / epoch | Val MAE |
 |---|---|---|---|---|---|---|---|
@@ -343,6 +350,8 @@ All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine de
 | **T2-W-Lichess-6.41M** | V2, 6.41M, no dropout | games + random + tactics + Lichess (407.7M) | win probability (BCE) | 50% | 1 | 19.3 h (2080 Ti, fp16) | **106 cp (all four sources), 106 mirrored** |
 | T3-W-Lichess-14.4M | V3, 14.4M (width 384, 8 heads of 48, feed-forward 1536, 8 layers), no dropout | same as T2-W-Lichess | win probability (BCE) | 50% | 1 | 25.7 h (2080 Ti, fp16) | 107 cp (all four sources), 107 mirrored |
 | **T2-SB-W-Lichess-6.97M** | V3 at V2's sizes (width 256, 16 heads of 16) + spatial attention bias, 6.97M, no dropout | same as T2-W-Lichess | win probability (BCE) | 50% | 1 | 20.2 h (2080 Ti, fp16) | **104 cp (all four sources), 104 mirrored** |
+| T2-SB-WSD-Lichess-6.97M | as T2-SB-W-Lichess | Lichess only (393.2M) | win probability (BCE) | 50% | 1 | 2.0 h (4× 4090, bf16) | 96.6 cp (lichess), 96.6 mirrored |
+| **T2-SB-WSD-LichessGames-6.97M** | as T2-SB-W-Lichess | Lichess + Lichess games (828.2M) | win probability (BCE) | 50% | 1 | 4.2 h (4× 4090, bf16) | **95.0 cp (lichess), 94.6 (games), 94.8 mirrored** |
 
 Val MAE by epoch:
 
@@ -432,6 +441,10 @@ The bias gave a large head start: through ~300k steps it was 13–18 cp ahead, m
 | **T2-W-Lichess-6.41M vs T2-W-6.41M** | **126 / 128 (98%)** | **124 / 4 / 0** | **about +700** (too lopsided to pin down) |
 | T3-W-Lichess-14.4M vs T2-W-Lichess-6.41M | 56.5 / 128 (44%) | 33 / 47 / 48 | −41 (−90 to +6) |
 | **T2-SB-W-Lichess-6.97M vs T2-W-Lichess-6.41M** | **68 / 128 (53%)** | **42 / 52 / 34** | **+22 (−24 to +69)** |
+| T2-SB-WSD-LichessGames-6.97M vs T2-SB-WSD-Lichess-6.97M (256 games: 128 openings) | 191 / 256 (75%) | 167 / 48 / 41 | +187 (+147 to +232) |
+| **T2-SB-WSD-LichessGames-6.97M vs T2-SB-W-Lichess-6.97M** (256 games: 128 openings) | **218 / 256 (85%)** | **204 / 28 / 24** | **+303 (+255 to +362)** |
+
+The two WSD models only differ in data: the month of Lichess games bought just 1.6 cp on the evaluation-database positions both validate on (96.6 → 95.0), but 187 Elo over the board. The game positions are lopsided (median |eval| 326 cp against 77, from lower-rated play with blunders), which is probably close to what the search meets after a bad move, and what balanced positions people chose to analyse don't cover; that's a hypothesis, not tested. The WSD recipe on its own (T2-SB-WSD-Lichess, same data as before minus the CSVs) is about +115 by the chain of the two matches.
 
 Earlier, smaller checks of 2–4 games: T1-3.25M drew T1-alpha 1–1. T2-6.41M beat T1-3.25M 2–0, despite its higher validation error.
 
@@ -525,6 +538,8 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 10. **Check the hardware's number formats.** On Turing GPUs bf16 is emulated: fp16 with loss scaling trained 3.5× faster. Raising the power limit gave only 1–2%.
 11. **Even with 409M positions, a bigger model didn't help.** The T2-W-Lichess curve flattened near 115 cp on game positions, which looked like a capacity limit, so T3 (14.4M, 2.2× the parameters) was trained the same way. It flattened at the same 114–115 cp and lost the match 56.5–71.5. The limit is more likely the labels (Stockfish evaluations are noisy targets) or the training recipe than model size; untuned learning rate for the wider model is a suspect.
 12. **Telling attention about the board beat adding size.** A static per-head 66×66 attention bias (557K parameters, ~5% slower) put the model a third of a run ahead early and finished better on every source and slightly ahead in play, where 8M extra parameters (T3) gave nothing. The head start mostly faded, though: given 400M positions the plain model learns the geometry anyway, so the bias pays most on shorter runs. A bias that depends on the position (Lc0's "smolgen") is the natural next step.
+13. **Four consumer GPUs: 10× the 2080 Ti, if the batch and LR grow with them.** 4× RTX 4090 trained the t2-sb architecture at 52k positions/s with batch 2048 (16k on one 4090, ~5.6k on the 2080 Ti); a 393M-position pass took 2 h instead of 20. Scaling the learning rate linearly with the batch kept the quality, and warmup-stable-decay to 1% beat cosine to 10% by ~6 cp.
+14. **Analysed game positions were worth far more in play than in validation error.** Adding 435M positions from a month of analysed Lichess games gave 1.6 cp and +187 Elo; together with the new schedule the result is +303 Elo over the previous default, the largest gain since adding the Lichess evaluation database.
 
 Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (smolgen) or a shared relative one, a learning rate scaled to model width, more epochs over the full data, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, time management (the bot searches to a fixed depth, so it can lose on time in the GUI), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
 
