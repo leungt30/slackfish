@@ -446,7 +446,7 @@ class Bot:
     finish in the time left (from how much each iteration grew over the last; an
     unfinished one is wasted), and it stops early on a forced mate or a single
     legal move. Pondering then has no depth limit either: it
-    deepens the opponent's PONDER_REPLIES likeliest replies together, a depth at a
+    deepens the opponent's ponder_replies (PONDER_REPLIES) likeliest replies together, a depth at a
     time, until they move. If they play one of them and it reached self.depth
     there, the bot plays that pondered move at once, using none of its time.
     Otherwise its search starts from the deepest depth it finished there.
@@ -481,6 +481,7 @@ class Bot:
         # None when there was no pondering before it
         self.ponder_ranks: dict[int, int] = {}
         self.ponder_searched = 0
+        self.ponder_replies = PONDER_REPLIES   # replies pondered together on a time budget
         self.last_ponder = None
         self._abort = None    # callable checked at every node; True stops the search
         # Search techniques (see _search), each switchable for benchmarking
@@ -719,7 +720,7 @@ class Bot:
         """Search the bot's reply to the opponent's moves, the opponent's likeliest
         moves first: the transposition table's best move, then by network score
         from the opponent's side. Without a time budget, each reply in turn is
-        searched to self.depth. With one, the PONDER_REPLIES likeliest replies are
+        searched to self.depth. With one, the ponder_replies likeliest replies are
         deepened together, a depth at a time, with no limit."""
         self.pondered = {}
         self.ponder_ranks, self.ponder_searched = {}, 0
@@ -741,7 +742,8 @@ class Bot:
                     replies.append((moves[i], position_key(board)))
                 board.pop()
             self.ponder_ranks = {key: rank for rank, (_, key) in enumerate(replies, start=1)}
-            self.ponder_searched = len(replies) if self.movetime is None else min(PONDER_REPLIES, len(replies))
+            # the setting, not how many there were this time, so logs group by it (Engine/ponderstats.py)
+            self.ponder_searched = len(replies) if self.movetime is None else self.ponder_replies
             if self.movetime is None:
                 for move, key in replies:
                     if handle.stop.is_set():
@@ -753,7 +755,7 @@ class Bot:
                     handle.current = None
                     board.pop()
             else:
-                replies = replies[:PONDER_REPLIES]
+                replies = replies[:self.ponder_replies]
                 for depth in range(1, MAX_DEPTH + 1):
                     for move, key in replies:
                         board.push(move)

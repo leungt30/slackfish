@@ -8,13 +8,14 @@ bot had pondered, and which one by rank, to choose how many replies to ponder
     uv run python Engine/ponderstats.py logs/lichess.out   # one log
 
 Engine/lichess.py logs each searched move's ponder result: "ponder hit #2/5 at d4"
-(the opponent played the 2nd likeliest reply; 5 were searched; it was pondered to
+(the opponent played the 2nd likeliest reply; up to 5 were pondered; it was pondered to
 depth 4), "ponder miss: #7/5" (ranked 7th, not searched) or "ponder miss: unranked".
 Pondering ranks every reply the opponent has (the transposition table's best move,
 then by network score) and searches the first PONDER_REPLIES together, a depth at a
 time, until the opponent moves.
 
-For each rank: how often the opponent played it, the running total ("pondering only
+Games are grouped by speed and by how many replies were pondered (--ponder-replies),
+to compare settings. For each rank: how often the opponent played it, the running total ("pondering only
 the top K would have caught this share"), how many of those hits were instant (pondered
 to the bot's :DEPTH, so played with no thinking) and the median depth pondering reached.
 
@@ -36,9 +37,10 @@ MOVE = re.compile(r"^\[(\w{8})\] \d+\.+\S+\s+\(depth (\d+), ponder (hit|miss):? 
 
 
 def read(paths, speed_filter):
-    speed = {}
-    stats = defaultdict(lambda: {"hits": Counter(), "instant": Counter(), "depths": defaultdict(list),
-                                 "misses": Counter(), "unranked": 0, "searched": Counter(), "games": set()})
+    """Per (speed, replies pondered): hits, misses and depths by rank. A game's setting is
+    the largest N on its lines (logs before --ponder-replies show fewer when the opponent
+    had fewer replies than that)."""
+    speed, moves = {}, defaultdict(list)   # game -> [(kind, rank, n, depth, secs)]
     for path in paths:
         if not os.path.exists(path):
             continue
@@ -49,25 +51,27 @@ def read(paths, speed_filter):
                     speed[g.group(1)] = g.group(2)
                     continue
                 m = MOVE.match(line)
-                if not m:
-                    continue
-                game, _, kind, rank, searched, depth, secs = m.groups()
-                sp = speed.get(game, "?")
-                if speed_filter and sp != speed_filter:
-                    continue
-                s = stats[sp]
-                s["games"].add(game)
-                if rank is None:
-                    s["unranked"] += 1
-                    continue
-                rank, searched = int(rank), int(searched)
-                s["searched"][searched] += 1
-                if kind == "hit":
-                    s["hits"][rank] += 1
-                    s["instant"][rank] += float(secs) < 0.05
-                    s["depths"][rank].append(int(depth))
-                else:
-                    s["misses"][rank] += 1
+                if m:
+                    game, _, kind, rank, n, depth, secs = m.groups()
+                    moves[game].append((kind, rank and int(rank), n and int(n), depth and int(depth), float(secs)))
+    stats = defaultdict(lambda: {"hits": Counter(), "instant": Counter(), "depths": defaultdict(list),
+                                 "misses": Counter(), "unranked": 0, "games": set()})
+    for game, rows in moves.items():
+        sp = speed.get(game, "?")
+        ns = [n for _, _, n, _, _ in rows if n]
+        if (speed_filter and sp != speed_filter) or not ns:
+            continue
+        s = stats[(sp, max(ns))]
+        s["games"].add(game)
+        for kind, rank, n, depth, secs in rows:
+            if rank is None:
+                s["unranked"] += 1
+            elif kind == "hit":
+                s["hits"][rank] += 1
+                s["instant"][rank] += secs < 0.05
+                s["depths"][rank].append(depth)
+            else:
+                s["misses"][rank] += 1
     return stats
 
 
@@ -76,9 +80,11 @@ def report(name, s):
     total = sum(hits.values()) + sum(misses.values()) + s["unranked"]
     if not total:
         return
-    searched = s["searched"].most_common(1)[0][0] if s["searched"] else "?"
+    speed, searched = name
     n_hit = sum(hits.values())
-    print(f"\n{name}: {len(s['games'])} games, {total} moves after pondering ({searched} replies searched): "
+    depths = [d for ds in s["depths"].values() for d in ds]
+    print(f"\n{speed}, {searched} replies pondered: {len(s['games'])} games, {total} moves after pondering, "
+          f"median ponder depth on hits {statistics.median(depths) if depths else '-'}: "
           f"hit {n_hit} ({100 * n_hit / total:.0f}%), instant {sum(s['instant'].values())} "
           f"({100 * sum(s['instant'].values()) / total:.0f}%)")
     print(f"  {'rank':>5} {'played':>7} {'share':>6} {'top-K total':>12} {'instant':>8} {'median ponder depth':>20}")
@@ -107,7 +113,7 @@ def main():
     stats = read(args.logs or LOGS, args.speed)
     if not stats:
         raise SystemExit("no moves with ponder ranks in the logs (logged since Engine/lichess.py records them)")
-    for name in sorted(stats):
+    for name in sorted(stats):   # one table per speed and number of replies pondered
         report(name, stats[name])
 
 
