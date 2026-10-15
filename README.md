@@ -141,9 +141,14 @@ A much stronger book is [Cerebellum Light](https://zipproth.de/Brainfish/downloa
 scripts/lichess-bot.sh start                     # online, accepting challenges
 scripts/lichess-bot.sh blitz                     # also challenge other bots: 10 rated 3+2 games (alias: series)
 scripts/lichess-bot.sh bullet --games 20         # the same at 1+1, with bullet time settings
-scripts/lichess-bot.sh status                    # running? playing? (and the game link)
+scripts/lichess-bot.sh challenge matmoi --games 3 --rated   # specific opponents
+scripts/lichess-bot.sh opponents --clock 1+1 --rating 1850-2100   # online bots a series would challenge
+scripts/lichess-bot.sh pause                     # finish the current game, then start no more (resume: go on)
+scripts/lichess-bot.sh status                    # running? paused? playing? (and the game link)
 scripts/lichess-bot.sh stop                      # once the current game ends (--now: right away)
 ```
+
+The blitz and bullet presets challenge online bots rated 1850-2100 at that speed (`--opponent-rating` to change), picked when the series starts; presets, `challenge` and `restart` stop a running bot between games first. Each searched move's log line records whether the opponent played a reply pondered on its time and which one (`ponder hit #2/3 at d4`); `uv run python Engine/ponderstats.py` sums that up by rank and setting. It ponders 3 replies in bullet and 5 otherwise (`--ponder-replies`; see [the experiment](#lichess-bot-time-management-and-pondering-t2-sb-w-lichess-697m-rtx-2080-ti)).
 
 On its clock it spends about 1/12 of its remaining time plus the increment per move (1/20 for clocks under 3 minutes, whoever started the game; `--moves-left N` overrides it), searching as deep as that allows, and ponders the opponent's 5 likeliest replies on their time. A pondered reply that reached the `:DEPTH` of `--bot` (5 in the script, 4 in its bullet preset) is played instantly. The header of `scripts/lichess-bot.sh` explains every setting and how to adjust it, written so another assistant can operate the bot. With 7 pieces or fewer it plays the perfect move from [Lichess's endgame tablebase](https://tablebase.lichess.ovh) instead of searching, so won endings get converted (the search alone once shuffled checks with king and queen until a threefold repetition). It accepts a draw offer only when its own evaluation is under +0.10, and resumes a game in progress after a restart or a dropped connection. `--stockfish 1,2,3` challenges Lichess's own Stockfish levels instead (always casual). Setup (a new account, its token in `.lichess_token`, and `lichess.py upgrade`) is in the docstring of `Engine/lichess.py`.
 
@@ -440,6 +445,39 @@ Ratings after 83 games: blitz 2044, bullet 2066 (bot-pool ratings, not comparabl
 - **Opening books.** Of 10 common amateur mistakes (Damiano 2...f6, the wayward queen, Englund gambit, Blackburne Shilling...), gm2001 has the punishing reply for 1 and Cerebellum Light for 7; the other 3 (Scholar's mate, Legal's trap, the elephant trap) are short tactics the search finds anyway.
 - **Practicalities.** Lichess limits each bot to 100 games a day against other bots, and many bots decline bot challenges, so a challenge list needs 15–20 names to keep a series going.
 
+### Lichess bot: time management and pondering (t2-sb-w-lichess-6.97m, RTX 2080 Ti)
+
+After moving the bot to the desktop and switching it to the spatial-bias model, its clock use and pondering were measured and tuned with the tools above (`Engine/timebench.py`, `Engine/clockreport.py`, `Engine/ponderstats.py`).
+
+**Starting the next depth.** A timed search only starts a depth predicted to finish in time: the last depth's time × the larger of the growth two depths back and a floor (`GROWTH`). On 25 positions, depth 4 → 5 took a median 3.5× (p90 7.4×) and 5 → 6 a median 2.1× (p90 4.1×), against floors of 8× and 6×, so the bot stopped with most of its budget unused. With floors of 4× and 3×, replaying the same timings:
+
+| Time per move | Depth 6 reached (old → new floors) | Depth 5 reached | Started a depth that ran out of time |
+|---|---|---|---|
+| 17 s (blitz, 3:00 left) | 8 → 17 of 25 | 25 → 25 | 0 |
+| 10 s | 0 → 5 | 18 → 24 | 2 |
+| 6 s | 0 → 0 | 8 → 18 | 0 |
+| 4 s (bullet, 1:00 left) | 0 → 0 | 1 → 7 | 2 |
+
+**Bullet clock.** In 51 earlier 1+1 games the bot spent 1/20 of its clock per move and finished with a median 44 s of 60 (opponents: 26 s; 16 of them in time trouble, the bot once). At 1/12, as in blitz, it finished a series with a median 29 s, never below 15 s, and searched depth 5+ on half the moves it thought about.
+
+**How many replies to ponder.** Pondering ranks every reply the opponent has (the transposition table's best move, then the network's scores) and deepens the likeliest few together on the opponent's time. Two 10-game bullet series, otherwise identical:
+
+| Bullet 1+1, ~410 moves each | 5 replies | 3 replies |
+|---|---|---|
+| Opponent played a pondered reply | 75% | 71% |
+| ... ranked #1 / #2 / #3 / #4-5 | 44% / 17% / 7% / 8% | 46% / 16% / 9% / (not pondered) |
+| Median depth pondering reached on hits | 3 | **4** |
+| Moves played instantly (pondered to depth 4) | 26% | **47%** |
+| Instant when the opponent played the likeliest reply | 46% | **77%** |
+| Seconds on moves it thought about (median) | 1.88 | 2.31 |
+| Score | 6 / 10 | 7.5 / 10 |
+
+The 4th and 5th likeliest replies were 8% of moves and almost never deep enough to be instant (3 of 32), while pondering them kept every reply at depth 3. With 3 replies the time saved went into longer thinking on the other moves (its budget is a share of its clock), so it finished with about the same clock (median 41 s against 45 s). 3 is now the bullet default; 12% of opponent moves ranked 11th or worse, which no number of replies would catch. Blitz keeps 5 (not yet compared).
+
+**A position-key collision.** The evaluation cache, transposition table and pondered results keyed positions by `hash(board._transposition_key())`. Python hashes an integer modulo 2⁶¹ − 1, so a bitboard with a piece on a1 (bit 0) hashes like one with it on f8 (bit 61), and likewise b1/g8 and c1/h8: positions differing only by such a move shared entries. It surfaced when a pondered reply, a queen check from a1, was resumed from the result for the same check from f8, crashing the game's search (the game was lost on time). `position_key()` adds each bitboard's top 32 bits so the key identifies the position. Before the fix, cached scores and transposition-table entries could silently come from the other position, in every search.
+
+**Results.** Blitz 3+2 against bots rated 1990-2080: 7 / 10 (rating 2104 → 2119). Against matmoi, who had won the series game: 6 / 6 (3 casual, 3 rated; 2136). Bullet 1+1 against bots rated 1960-2090: 5 / 10 including the crash, then 6 / 10 with 5 replies pondered and 7.5 / 10 with 3 (bullet 2066 → 2097).
+
 ### Hardware and speed
 
 | Experiment | Result |
@@ -490,8 +528,11 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 10. **Check the hardware's number formats.** On Turing GPUs bf16 is emulated: fp16 with loss scaling trained 3.5× faster. Raising the power limit gave only 1–2%.
 11. **Even with 409M positions, a bigger model didn't help.** The T2-W-Lichess curve flattened near 115 cp on game positions, which looked like a capacity limit, so T3 (14.4M, 2.2× the parameters) was trained the same way. It flattened at the same 114–115 cp and lost the match 56.5–71.5. The limit is more likely the labels (Stockfish evaluations are noisy targets) or the training recipe than model size; untuned learning rate for the wider model is a suspect.
 12. **Telling attention about the board beat adding size.** A static per-head 66×66 attention bias (557K parameters, ~5% slower) put the model a third of a run ahead early and finished better on every source and slightly ahead in play, where 8M extra parameters (T3) gave nothing. The head start mostly faded, though: given 400M positions the plain model learns the geometry anyway, so the bias pays most on shorter runs. A bias that depends on the position (Lc0's "smolgen") is the natural next step.
+13. **Measure time management instead of guessing it.** The growth floors and the bullet clock share were set cautiously; measured, the bot was leaving most of its time unused. Per-depth timings (`timebench`) and clock histories (`clockreport`) showed it, and changing two constants gave depth 5+ on half of bullet moves.
+14. **For pondering, depth beats breadth when time is short.** Pondering 3 replies instead of 5 lost 4 points of hit rate but nearly doubled the moves played instantly (26% → 47%), because the likeliest reply finally got deep enough. `ponderstats` gives the rank of every opponent move, so the cost of dropping a rank is known before trying it.
+15. **`hash()` of a tuple of 64-bit ints is not a position key.** Python's int hash is the value modulo 2⁶¹ − 1, so a1 and f8 collide. It went unnoticed in every search until pondering crashed on it.
 
-Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (smolgen) or a shared relative one, a learning rate scaled to model width, more epochs over the full data, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, time management (the bot searches to a fixed depth, so it can lose on time in the GUI), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
+Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (smolgen) or a shared relative one, a learning rate scaled to model width, more epochs over the full data, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, comparing 3 and 5 pondered replies in blitz, a better ranking of the opponent's replies for pondering (12% of moves ranked 11th or worse), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
 
 ## Repository Layout
 
@@ -504,6 +545,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
 │   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
+│   ├── ponderstats.py       # Ponder hit rate by reply rank, from the Lichess bot's logs
 │   ├── export.py            # Game -> animated GIF / final-position PNG
 │   ├── GameLoop.py          # Legacy, broken (see below)
 │   ├── BotVsBot.py          # Legacy, needs V5 weights
