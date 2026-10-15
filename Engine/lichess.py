@@ -55,6 +55,10 @@ TOKEN_FILE = os.path.join(ROOT, ".lichess_token")
 LAG = 0.3   # seconds kept back from each move's budget for the network round trip
 MOVES_LEFT = 12   # --moves-left for 3+ minute clocks (blitz games ended with 160-245 s unused at 25)
 MOVES_LEFT_BULLET = 12   # ... and under 3 minutes (1+1 games ended with ~44 s of 60 unused at 20)
+# Opponent replies pondered together, by starting clock. In 1+1 the opponent thinks 1-2 s:
+# 3 replies reached depth 4 and played 47% of moves instantly, against depth 3 and 26% for 5
+# (10 games each; Engine/ponderstats.py). Slower games keep 5.
+PONDER_REPLIES_BULLET = 3
 DRAW_BELOW = 10   # accept a draw offer when our last eval is under this many centipawns (+0.10) for us
 TABLEBASE = "https://tablebase.lichess.ovh/standard"   # Lichess's free endgame tablebase (up to 7 pieces)
 TABLEBASE_PIECES = 7
@@ -185,7 +189,6 @@ class GamePlayer:
         name, depth = args.bot
         self.bot = load_bot(name, depth=depth, device=args.device, book=book,
                             movetime=1.0)   # searches by time; each move passes its own budget
-        self.bot.ponder_replies = args.ponder_replies
         self.pondering = None
         self.plies = -1      # moves in the last position handled, to skip repeats (draw offers, clock updates)
         self.score = None    # White-perspective score of our last search (None: none yet, or a book move)
@@ -223,6 +226,7 @@ class GamePlayer:
             self.start = chess.Board() if fen == "startpos" else chess.Board(fen)
             base = (full.get("clock") or {}).get("initial", 180_000) / 1000
             self.moves_left = self.args.moves_left or (MOVES_LEFT_BULLET if base < 180 else MOVES_LEFT)
+            self.bot.ponder_replies = self.args.ponder_replies or (PONDER_REPLIES_BULLET if base < 180 else PONDER_REPLIES)
             print(f"[{self.game_id}] {'White' if self.color == chess.WHITE else 'Black'} vs {self.opponent}"
                   f" ({full['speed']}, {'rated' if full['rated'] else 'casual'}): https://lichess.org/{self.game_id}")
         if not self.on_state(full["state"]):
@@ -584,9 +588,9 @@ def main():
     p.add_argument("--casual-only", action="store_true", help="decline rated challenges")
     p.add_argument("--no-bots", action="store_true", help="decline challenges from other bots")
     p.add_argument("--no-ponder", action="store_true", help="don't think on the opponent's time")
-    p.add_argument("--ponder-replies", type=int, default=PONDER_REPLIES,
-                   help=f"opponent replies to ponder together (default {PONDER_REPLIES}); fewer get deeper. "
-                        "Engine/ponderstats.py compares settings")
+    p.add_argument("--ponder-replies", type=int,
+                   help=f"opponent replies to ponder together; fewer get deeper (default: {PONDER_REPLIES_BULLET} for "
+                        f"clocks under 3 minutes, else {PONDER_REPLIES}). Engine/ponderstats.py compares settings")
     p.add_argument("--no-tablebase", action="store_true",
                    help="search endgames too, instead of asking Lichess's tablebase with 7 pieces or fewer")
     p.add_argument("--moves-left", type=float,
