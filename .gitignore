@@ -18,6 +18,7 @@ full_16m_preprocessed_chess_data.npz
 Models/Weights/*/last.pt
 Models/Weights/*/best.pt
 Models/Weights/*/model.safetensors
+Models/Weights/*/snapshot_*.pt
 *.pt.tmp
 .venv
 
@@ -28,3 +29,5 @@ Models/Books/Cerebellum3Merge.bin
 !Engine/data/
 # Server and bot output (Engine/gui.py, Engine/lichess.py)
 logs/
+# Training experiments: sweep and full-run scripts, logs, checkpoints, GPU power logs
+runs/
