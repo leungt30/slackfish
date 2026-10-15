@@ -48,7 +48,7 @@ from collections import defaultdict
 import chess
 import requests
 
-from bots import BOTS, ROOT, OpeningBook, SearchAborted, load_bot
+from bots import BOTS, PONDER_REPLIES, ROOT, OpeningBook, SearchAborted, load_bot
 
 API = "https://lichess.org"
 TOKEN_FILE = os.path.join(ROOT, ".lichess_token")
@@ -155,8 +155,8 @@ def tablebase_move(board, timeout):
 
 def ponder_note(last_ponder):
     """How the opponent's move compared with our pondering, for the move log (read by
-    Engine/ponderstats.py): ", ponder hit #2/5 at d4" (the 2nd likeliest of the 5
-    replies searched, pondered to depth 4), ", ponder miss: #7/5" (ranked 7th, not
+    Engine/ponderstats.py): ", ponder hit #2/5 at d4" (the 2nd likeliest reply, with
+    up to 5 pondered (--ponder-replies), pondered to depth 4), ", ponder miss: #7/5" (ranked 7th, not
     searched), ", ponder miss: unranked" (not among the replies considered), or ""
     when there was no pondering."""
     if last_ponder is None:
@@ -185,6 +185,7 @@ class GamePlayer:
         name, depth = args.bot
         self.bot = load_bot(name, depth=depth, device=args.device, book=book,
                             movetime=1.0)   # searches by time; each move passes its own budget
+        self.bot.ponder_replies = args.ponder_replies
         self.pondering = None
         self.plies = -1      # moves in the last position handled, to skip repeats (draw offers, clock updates)
         self.score = None    # White-perspective score of our last search (None: none yet, or a book move)
@@ -583,6 +584,9 @@ def main():
     p.add_argument("--casual-only", action="store_true", help="decline rated challenges")
     p.add_argument("--no-bots", action="store_true", help="decline challenges from other bots")
     p.add_argument("--no-ponder", action="store_true", help="don't think on the opponent's time")
+    p.add_argument("--ponder-replies", type=int, default=PONDER_REPLIES,
+                   help=f"opponent replies to ponder together (default {PONDER_REPLIES}); fewer get deeper. "
+                        "Engine/ponderstats.py compares settings")
     p.add_argument("--no-tablebase", action="store_true",
                    help="search endgames too, instead of asking Lichess's tablebase with 7 pieces or fewer")
     p.add_argument("--moves-left", type=float,
