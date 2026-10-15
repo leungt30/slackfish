@@ -254,7 +254,10 @@ PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, 
 EXACT, LOWER, UPPER = 0, 1, 2   # transposition table bound types
 MATE_BOUND = MATE_SCORE - 1000  # scores beyond this are mates, stored relative to the node
 MAX_DEPTH = 64   # iterative deepening limit for a bot on a time budget (movetime)
-PONDER_REPLIES = 5   # opponent replies a bot on a time budget ponders on
+# Opponent replies a bot on a time budget ponders on together. 3 beat 5 at 1+1 and 3+2 on
+# Lichess: pondering got a depth deeper, ~47% of moves were instant instead of 26-30%, and it
+# finished with more clock, for 4-11 points less hit rate (Engine/ponderstats.py; README)
+PONDER_REPLIES = 3
 # Least assumed time ratio of an iteration to the one before, by the depth it reaches
 # (measured with the pruning in _search; deeper ones alternate even 6x / odd 8x).
 # 5 and 6: Engine/timebench.py on an RTX 2080 Ti measured 4->5 at median 3.5x (p90 7.4x)
