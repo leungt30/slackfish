@@ -174,7 +174,7 @@ def settings(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--suite", choices=["blunders", "wac", "all"], default="blunders")
-    p.add_argument("--bot", default="t2-sb-w-lichess-6.97m", help="bot to test (default: the default bot, t2-sb-w-lichess-6.97m)")
+    p.add_argument("--bot", default="t2-sb-wsd-lichessgames-6.97m", help="bot to test (default: the default bot, t2-sb-wsd-lichessgames-6.97m)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--depth", type=int, default=3)
     g.add_argument("--movetime", type=float, help="seconds per position instead of a fixed depth")
