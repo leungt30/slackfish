@@ -70,18 +70,18 @@
 #
 # Bullet vs blitz settings (what the presets change, and how to adjust them):
 #                 clock   think per move (budget)                     replies pondered   pondered reply played at once from
-#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    5                  depth 5   (--bot t2-sb-w-lichess-6.97m:5)
+#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 5   (--bot t2-sb-w-lichess-6.97m:5)
 #   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 4   (--bot t2-sb-w-lichess-6.97m:4)
 #                         4.3 s at 0:40, 2.7 s at 0:20, 1.7 s at 0:08
 #   - Both use 1/12 now (MOVES_LEFT / MOVES_LEFT_BULLET in Engine/lichess.py). Bullet
 #     used 1/20 and finished 1+1 games with ~44 s of 60 unused; at 1/12 it ended a
 #     10-game series with a median 29 s left and reached depth 5+ on half its moves.
-#   - Replies pondered (--ponder-replies): 3 in bullet, 5 otherwise. With 5, bullet pondering
-#     only reached depth 3 in the opponent's 1-2 s and 26% of moves were instant; with 3 it
-#     reached depth 4 and 47% were instant (the 4th/5th likeliest replies are only ~8% of
-#     moves). Compare settings with `uv run python Engine/ponderstats.py --speed bullet`.
-#   - Both are chosen by each game's starting clock (under 3 minutes = bullet), for ANY game,
-#     including friends' challenges in plain `start` mode.
+#   - Replies pondered (--ponder-replies, default 3 = PONDER_REPLIES in Engine/bots.py). With
+#     5, pondering reached a depth less (3 in bullet, 4 in blitz) and 26-30% of moves were
+#     instant; with 3, 46-47% were, and it finished with more clock (the 4th/5th likeliest
+#     replies are only ~8% of moves). Compare settings: `uv run python Engine/ponderstats.py`.
+#   - The time share is chosen by each game's starting clock (under 3 minutes = bullet), for
+#     ANY game, including friends' challenges in plain `start` mode.
 #   - "bullet, but a different clock":   bullet --clock 2+1   (or 0.5+1 for 30 s; MINUTES+SECONDS)
 #   - "bullet, casual (unrated)":        bullet --casual      (works for blitz too: blitz --casual)
 #   - "think faster / slower":           add --moves-left N (higher = less time per move; default 12).
@@ -125,8 +125,8 @@ OPPONENT_RATING=1850-2100
 # Blitz: 1/12 of the clock + increment per move (about 17 s at 3:00), and a pondered
 # reply searched to depth 5 is played at once.
 BLITZ=(--challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 3+2 --rated)
-# Bullet: also 1/12 (about 6 s at 1:00); 3 replies pondered (lichess.py's bullet default),
-# and a pondered reply searched to depth 4 is played at once.
+# Bullet: also 1/12 (about 6 s at 1:00), and a pondered reply searched to depth 4 is
+# played at once.
 BULLET=(--bot t2-sb-w-lichess-6.97m:4 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
 
 # The bot's pid, if it's running (exit status 1 otherwise)
