@@ -294,19 +294,32 @@ class ChessTransformerV4(nn.Module):
     """V3 blocks on 64 square tokens (canonical_tokens): the position is seen from the
     side to move and the output negated back for flipped rows, so it is still from
     White's perspective, and model(mirror(x)) == -model(x) exactly (colour-swap
-    augmentation does nothing). spatial_bias=True: a per-head 64 x 64 table per layer."""
+    augmentation does nothing). spatial_bias=True: a per-head 64 x 64 table per layer.
+    smolgen=True (needs spatial_bias) adds V3's position-dependent bias on top, with a
+    shared smolgen_head -> 64 x 64 output layer (see ChessTransformerV3)."""
 
-    def __init__(self, d_model=256, n_layers=8, n_heads=16, d_ff=1024, dropout=0.0, spatial_bias=False):
+    def __init__(self, d_model=256, n_layers=8, n_heads=16, d_ff=1024, dropout=0.0, spatial_bias=False,
+                 smolgen=False, smolgen_square=8, smolgen_summary=128, smolgen_head=64):
         super().__init__()
+        if smolgen and not spatial_bias:
+            raise ValueError("smolgen is added to the static table: it needs spatial_bias=True")
         self.config = dict(d_model=d_model, n_layers=n_layers, n_heads=n_heads,
                            d_ff=d_ff, dropout=dropout, spatial_bias=spatial_bias)
+        if smolgen:   # (left out otherwise, so other configs are unchanged)
+            self.config.update(smolgen=True, smolgen_square=smolgen_square,
+                               smolgen_summary=smolgen_summary, smolgen_head=smolgen_head)
 
         self.square_emb = nn.Embedding(NUM_V4_TOKENS, d_model)
         self.pos_emb = nn.Parameter(torch.zeros(1, 64, d_model))
         nn.init.normal_(self.pos_emb, std=0.02)
 
-        self.blocks = nn.ModuleList(EncoderBlock(d_model, n_heads, d_ff, dropout, spatial_bias, n_tokens=64)
+        sg = dict(square=smolgen_square, summary=smolgen_summary, head=smolgen_head) if smolgen else None
+        self.blocks = nn.ModuleList(EncoderBlock(d_model, n_heads, d_ff, dropout, spatial_bias, sg, n_tokens=64)
                                     for _ in range(n_layers))
+        self.smolgen_out = nn.Linear(smolgen_head, 64 * 64) if smolgen else None   # shared by every layer
+        if smolgen:
+            nn.init.zeros_(self.smolgen_out.weight)
+            nn.init.zeros_(self.smolgen_out.bias)
 
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Sequential(
@@ -320,7 +333,7 @@ class ChessTransformerV4(nn.Module):
         tokens, flipped = canonical_tokens(squares, castling, turn)
         x = self.square_emb(tokens) + self.pos_emb    # [B, 64, D]
         for block in self.blocks:
-            x = block(x)
+            x = block(x, self.smolgen_out)
         x = self.norm(x).mean(dim=1)                  # [B, D]
         out = self.head(x).squeeze(-1)                # [B], from the side to move's perspective
         return torch.where(flipped, -out, out)        # back to White's
