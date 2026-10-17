@@ -31,3 +31,6 @@ Models/Books/Cerebellum3Merge.bin
 logs/
 # Training experiments: sweep and full-run scripts, logs, checkpoints, GPU power logs
 runs/
+
+# DeepMind searchless_chess clone, its venv and checkpoints (scripts/setup-deepmind.sh)
+external/
