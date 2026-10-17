@@ -70,8 +70,8 @@
 #
 # Bullet vs blitz settings (what the presets change, and how to adjust them):
 #                 clock   think per move (budget)                     replies pondered   pondered reply played at once from
-#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 5   (--bot t2-sb-wsd-lichessgames-6.97m:5)
-#   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 4   (--bot t2-sb-wsd-lichessgames-6.97m:4)
+#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 5   (--bot t2-sg-wsd-lichessgames-8.87m:5)
+#   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 4   (--bot t2-sg-wsd-lichessgames-8.87m:4)
 #                         4.3 s at 0:40, 2.7 s at 0:20, 1.7 s at 0:08
 #   - Both use 1/12 now (MOVES_LEFT / MOVES_LEFT_BULLET in Engine/lichess.py). Bullet
 #     used 1/20 and finished 1+1 games with ~44 s of 60 unused; at 1/12 it ended a
@@ -116,7 +116,7 @@ BOOK=Cerebellum3Merge.bin
 [ -f "Models/Books/$BOOK" ] || BOOK=gm2001.bin
 # Model and depth: NAME:DEPTH. The search is timed with no depth limit; DEPTH is how
 # deep a pondered reply must have been searched to be played without thinking more.
-DEFAULTS=(--bot t2-sb-wsd-lichessgames-6.97m:5 --book "$BOOK" --book-plies 30)
+DEFAULTS=(--bot t2-sg-wsd-lichessgames-8.87m:5 --book "$BOOK" --book-plies 30)
 # Opponents for the presets: online bots rated this at the series' speed, found when it
 # starts (`opponents` lists them). Any that decline twice or don't answer are skipped
 # for the rest of the run; bots that played 100 bot games today are skipped too.
@@ -127,7 +127,7 @@ OPPONENT_RATING=1850-2100
 BLITZ=(--challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 3+2 --rated)
 # Bullet: also 1/12 (about 6 s at 1:00), and a pondered reply searched to depth 4 is
 # played at once.
-BULLET=(--bot t2-sb-wsd-lichessgames-6.97m:4 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
+BULLET=(--bot t2-sg-wsd-lichessgames-8.87m:4 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
 
 # The bot's pid, if it's running (exit status 1 otherwise)
 pid() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && cat "$PIDFILE"; }

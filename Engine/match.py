@@ -22,7 +22,7 @@ scripts/setup-deepmind.sh). It moves after one forward pass, so --movetime doesn
 deepmind:270M:fp32 runs it in full precision (same moves, slower). It's GPU-bound, so use
 --workers 2 at most: four DeepMind processes together were no faster than one.
 
-    uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m deepmind:270M --depth 4 --openings 16 --workers 2
+    uv run python Engine/match.py t2-sg-wsd-lichessgames-8.87m deepmind:270M --depth 4 --openings 16 --workers 2
 
 Bot against bot at equal time instead of equal depth (--bot-movetime: both search for that
 many seconds per move), for changes that trade evaluation quality for speed; --weights /
@@ -30,7 +30,7 @@ many seconds per move), for changes that trade evaluation quality for speed; --w
 name without registering it; --gpus spreads the workers over several GPUs, which also
 keeps timed searches from slowing each other down on a shared GPU:
 
-    uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m t2-sb-wsd-lichessgames-6.97m \\
+    uv run python Engine/match.py t2-sg-wsd-lichessgames-8.87m t2-sg-wsd-lichessgames-8.87m \\
         --weights runs/new/best.pt --bot-movetime 0.5 --openings 128 --workers 16 --gpus 4
 """
 import argparse
