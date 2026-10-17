@@ -29,7 +29,9 @@ Augmentation: each training position is colour-swapped (board mirrored, colours,
 castling and turn swapped, target negated) with probability --augment-prob, so
 the model sees "White is winning" and "Black is winning" equally often. The
 validation set is scored both as-is and mirrored; a large gap between the two
-MAEs means the model evaluates the two colours inconsistently.
+MAEs means the model evaluates the two colours inconsistently. --arch v4 sees every
+position from the side to move, so a colour swap doesn't change its input: augmentation
+is turned off and the mirrored MAE is the plain one (not scored twice).
 
 Precision (--precision): mixed precision on CUDA. auto uses bf16 on GPUs with
 native bf16 (Ampere and newer) and fp16 with loss scaling on older ones such as
@@ -104,7 +106,7 @@ def parse_args():
     p.add_argument("--wp-scale", type=float, default=400,
                    help="winprob target: win probability = sigmoid(cp / WP_SCALE)")
     p.add_argument("--arch", choices=list(MODELS), default="v1",
-                   help="model class from NoFeat/model.py (v1, v2, v3 = ChessTransformerV1, V2, V3)")
+                   help="model class from NoFeat/model.py (v1 ... v4 = ChessTransformerV1 ... V4)")
     # Size options default to the chosen class's own defaults
     p.add_argument("--d-model", type=int)
     p.add_argument("--layers", type=int)
@@ -112,7 +114,7 @@ def parse_args():
     p.add_argument("--d-ff", type=int)
     p.add_argument("--dropout", type=float)
     p.add_argument("--spatial-bias", action="store_true",
-                   help="v3 only: learned per-head 66x66 attention bias in every layer")
+                   help="v3 / v4 only: learned per-head attention bias (66x66 / 64x64) in every layer")
     p.add_argument("--augment-prob", type=float, default=0.5,
                    help="chance each training position is colour-swapped (0 = off)")
     p.add_argument("--no-compile", dest="compile", action="store_false",
@@ -316,9 +318,14 @@ def main():
     overrides = {k: v for k, v in dict(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads,
                                        d_ff=args.d_ff, dropout=args.dropout).items() if v is not None}
     if args.spatial_bias:
-        if args.arch != "v3":
-            raise SystemExit("--spatial-bias needs --arch v3")
+        if args.arch not in ("v3", "v4"):
+            raise SystemExit("--spatial-bias needs --arch v3 or v4")
         overrides["spatial_bias"] = True
+    symmetric = args.arch == "v4"   # model(mirror(x)) == -model(x) by construction
+    if symmetric and args.augment_prob > 0:
+        log(f"--arch v4 sees every position from the side to move, so colour swaps change "
+            f"nothing: --augment-prob {args.augment_prob} -> 0")
+        args.augment_prob = 0.0
     model = MODELS[args.arch](**overrides).to(device)
     log(f"{type(model).__name__} {model.config}: {sum(p.numel() for p in model.parameters()):,} parameters")
     if world > 1:
@@ -466,10 +473,13 @@ def main():
                 save(checkpoint(epoch, step + 1), "last.pt")
 
         sq_err, cp_err = val_metrics(*validate(val_idx), args)
-        _, mirror_cp_err = val_metrics(*validate(val_idx[val_used], mirror=True), args)
         val_mse = sq_err[val_used].mean().item()
         val_mae_cp = cp_err[val_used].mean().item()
-        mirror_mae_cp = mirror_cp_err.mean().item()
+        if symmetric:   # the mirrored predictions are exactly the negated ones
+            mirror_mae_cp = val_mae_cp
+        else:
+            _, mirror_cp_err = val_metrics(*validate(val_idx[val_used], mirror=True), args)
+            mirror_mae_cp = mirror_cp_err.mean().item()
         val_source = source[val_idx]
         by_source = {name: cp_err[val_source == i].mean().item()
                      for i, name in enumerate(source_names) if (val_source == i).any()}
