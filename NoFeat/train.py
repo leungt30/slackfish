@@ -90,6 +90,8 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw",
+                   help="muon: Muon for the 2D weight matrices inside the layers, AdamW for the rest")
     p.add_argument("--warmup-steps", type=int, default=2000)
     p.add_argument("--schedule", choices=["cosine", "wsd"], default="cosine",
                    help="after warmup: cosine decay, or wsd (warmup-stable-decay: flat, then a linear decay)")
@@ -215,6 +217,28 @@ def in_sources(idx, source, use):
     return mask
 
 
+def make_optimizers(model, args):
+    """[AdamW], or for --optimizer muon [Muon for the 2D weight matrices inside the layers
+    (attention and feed-forward), AdamW for the rest: embeddings, norms, biases, the
+    attention bias tables and the output head]. Muon's updates are scaled to AdamW's size
+    (match_rms_adamw), so both take the same --lr, schedule and --weight-decay."""
+    if args.optimizer == "adamw":
+        return [torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
+    inside = lambda name: name.startswith(("encoder.layers.", "blocks."))
+    matrices = [p for n, p in model.named_parameters() if p.ndim == 2 and inside(n)]
+    rest = [p for n, p in model.named_parameters() if not (p.ndim == 2 and inside(n))]
+    return [torch.optim.Muon(matrices, lr=args.lr, weight_decay=args.weight_decay, adjust_lr_fn="match_rms_adamw"),
+            torch.optim.AdamW(rest, lr=args.lr, weight_decay=args.weight_decay)]
+
+
+def as_list(state):
+    return state if isinstance(state, list) else [state]
+
+
+def from_list(states):
+    return states[0] if len(states) == 1 else states
+
+
 def setup_distributed():
     """(rank, world size, device). Under torchrun (WORLD_SIZE > 1) this joins the
     NCCL process group, one GPU per process; otherwise it's a single process."""
@@ -330,7 +354,7 @@ def main():
     if world > 1:
         torch.manual_seed(args.seed + rank)   # different dropout per GPU; DDP copies rank 0's weights
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizers = make_optimizers(model, args)
     steps_per_epoch = len(train_idx) // args.batch_size   # drop the ragged last batch
     # model stays the bare module (checkpoints, validation); forward averages gradients across GPUs
     forward = torch.compile(model) if args.compile and device.type == "cuda" else model
@@ -348,15 +372,18 @@ def main():
             return 1.0 - (1 - floor) * min(1.0, max(0.0, progress))
         progress = (step - args.warmup_steps) / max(1, total_steps - args.warmup_steps)
         return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_at)
+    schedulers = [torch.optim.lr_scheduler.LambdaLR(o, lr_at) for o in optimizers]
+    scheduler = schedulers[0]   # (they all follow the same schedule)
     scaler = torch.amp.GradScaler(device.type, enabled=args.precision == "fp16")   # fp16 needs loss scaling
 
     start_epoch, start_step, best_val, history, curve = 1, 0, float("inf"), [], []
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        for o, state in zip(optimizers, as_list(ckpt["optimizer_state_dict"]), strict=True):
+            o.load_state_dict(state)
+        for s, state in zip(schedulers, as_list(ckpt["scheduler_state_dict"]), strict=True):
+            s.load_state_dict(state)
         if ckpt.get("scaler_state_dict") and scaler.is_enabled():
             scaler.load_state_dict(ckpt["scaler_state_dict"])
         best_val = ckpt["best_val"]
@@ -379,8 +406,9 @@ def main():
             "epoch": epoch,
             "step": step,   # next step to run within `epoch`, None once the epoch is done
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
+            # one optimizer (AdamW): its state as before; Muon + AdamW: a list of both
+            "optimizer_state_dict": from_list([o.state_dict() for o in optimizers]),
+            "scheduler_state_dict": from_list([s.state_dict() for s in schedulers]),
             "scaler_state_dict": scaler.state_dict() if scaler.is_enabled() else None,
             "model_class": type(model).__name__,
             "model_config": model.config,
@@ -437,13 +465,17 @@ def main():
                 pred = forward(sq, ca, tu)
             loss = criterion(pred.float(), y)
 
-            optimizer.zero_grad(set_to_none=True)
+            for o in optimizers:
+                o.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)   # clip the real gradients, not the scaled ones
+            for o in optimizers:
+                scaler.unscale_(o)   # clip the real gradients, not the scaled ones
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)   # skipped if fp16 gradients overflowed
+            for o in optimizers:
+                scaler.step(o)   # skipped if fp16 gradients overflowed
             scaler.update()
-            scheduler.step()
+            for s in schedulers:
+                s.step()
 
             if step % 10 == 0:   # .item() syncs with the GPU, so don't do it every step
                 step_loss = loss.detach()
