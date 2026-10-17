@@ -67,6 +67,38 @@ scales the learning rate down with width).
 time each on the 2080 Ti). If the lower learning rate leads early on, scale the learning rate down
 with width for future large runs (roughly lr x 256 / d_model as a starting point).
 
+## WSD models: make the default, document
+
+The 4-GPU machine trained two models with a WSD (warmup-stable-decay) schedule and uploaded
+them to Hugging Face (mathemagicianz/slackfish); their training code is not on GitHub yet.
+
+- `SlackFishV-T2-SB-WSD-Lichess-6.97M` (Lichess eval DB only, val MAE 96.6 cp): 86/128
+  (+124 Elo) vs t2-sb-w-lichess-6.97m at depth 2.
+- `SlackFishV-T2-SB-WSD-LichessGames-6.97M` (+ Sept 2026 Lichess games, val MAE 94.7 cp;
+  +303 Elo vs t2-sb-w-lichess per the uploader). The Lichess bot has played it since
+  2026-10-15: blitz 2170 -> 2302, bullet 2111 -> 2301 over ~170 rated games.
+
+Both are registered in `Engine/bots.py` (`t2-sb-wsd-lichess-6.97m`,
+`t2-sb-wsd-lichessgames-6.97m`) on branch claude/wsd-model, not merged. To do: make
+`t2-sb-wsd-lichessgames-6.97m` the default (GUI, lichess.py, lichess-bot.sh presets), add
+it to the README and the HF model card. Open question for the owner: write up the training
+from the HF commit messages/config.json now, or wait for the training code to be pushed
+(then rebase: it will likely touch NoFeat/train.py, Engine/bots.py and README.md).
+
+## Lichess bot fixes
+
+- **Aborted games count toward --games.** An abort (opponent never moved) is logged as
+  "aborted: drew" and counted in the series total and the score summary. Skip aborts in
+  `BotRunner.play` / `results`, and don't count them toward `self.started`.
+- **Tablebase underpromotion.** `tablebase_move` plays Lichess's first move, ranked by DTZ,
+  which can be an underpromotion when promoting to a queen also wins (64.f8=R in
+  lichess.org/Vag0zGhD). Prefer the queen promotion when it has the same category (win),
+  like the search's queen-first rule.
+- **Per-opponent cap.** `--challenge A,B,C --games 15` cycles in order, so a skipped turn
+  shifts the cycle and one opponent gets 6 games, another 4. Add `--games-each N`.
+- **Connection retries.** About 12 "POST ... failed (ConnectionError), retrying" in ~60 games
+  on the desktop; all recovered within seconds. Watch for it costing time in bullet.
+
 ## Muon optimizer
 
 **Idea:** train the weight matrices with Muon instead of AdamW. Muon orthogonalizes each
