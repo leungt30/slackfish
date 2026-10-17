@@ -183,6 +183,36 @@ def load_data(path):
             "source": read("source", np.uint8, n), "source_names": np.array(meta["source_names"])}
 
 
+CHUNK = 50_000_000   # positions per step of the chunked startup work below
+
+
+class Targets:
+    """The training targets in model units, computed from the evals as they're indexed
+    (targets[idx] is a float tensor), so each process doesn't keep 4 bytes per position
+    of its own: the evals stay in the shared memory map of a packed --data folder."""
+
+    def __init__(self, evals, args):
+        self.evals, self.args = evals, args
+
+    def __len__(self):
+        return len(self.evals)
+
+    def __getitem__(self, idx):
+        evals = self.evals[idx]
+        if self.args.target == "winprob":   # logit of the win probability; mates (+-32000 cp) saturate on their own
+            return evals / self.args.wp_scale
+        return evals.clamp(-self.args.clip, self.args.clip) / self.args.scale
+
+
+def in_sources(idx, source, use):
+    """Whether each position in idx is from a source in use, as a bool mask built a chunk
+    at a time (source[idx].long() in one go would be 8 bytes per position)."""
+    mask = torch.empty(len(idx), dtype=torch.bool)
+    for i in range(0, len(idx), CHUNK):
+        mask[i:i + CHUNK] = use[source[idx[i:i + CHUNK]].long()]
+    return mask
+
+
 def setup_distributed():
     """(rank, world size, device). Under torchrun (WORLD_SIZE > 1) this joins the
     NCCL process group, one GPU per process; otherwise it's a single process."""
@@ -256,16 +286,13 @@ def main():
     turn = torch.from_numpy(data["turn"][keep])
     if "source" not in data:
         raise SystemExit(f"{args.data} has no source tags; re-run `uv run python -m NoFeat.prepare_data`")
-    source = torch.from_numpy(data["source"][keep])   # uint8: .long() only on subsets, to save RAM
+    source = torch.from_numpy(data["source"][keep])   # uint8: .long() only on chunks, to save RAM
     source_names = [str(x) for x in data["source_names"]]
     unknown = set(args.sources) - set(source_names)
     if unknown:
         raise SystemExit(f"unknown --sources {sorted(unknown)}; {args.data} has {source_names}")
     use = torch.tensor([name in args.sources for name in source_names])
-    if args.target == "winprob":   # logit of the win probability; mates (+-32000 cp) saturate on their own
-        targets = torch.from_numpy(data["eval"][keep] / args.wp_scale).float()
-    else:
-        targets = torch.from_numpy(np.clip(data["eval"][keep], -args.clip, args.clip) / args.scale).float()
+    targets = Targets(torch.from_numpy(data["eval"][keep]), args)
 
     del data
     # int32 indices halve the index arrays' memory on huge datasets (small ones keep
@@ -273,10 +300,13 @@ def main():
     index_dtype = torch.int32 if n > 50_000_000 else torch.int64
     perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed), dtype=index_dtype)
     n_val = max(1, int(n * args.val_frac))
-    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    val_idx, train_idx = perm[:n_val].clone(), perm[n_val:]   # train_idx stays a view of perm
     del perm
-    train_idx = train_idx[use[source[train_idx].long()]]    # train only on the chosen sources
-    val_used = use[source[val_idx].long()]                   # val positions from those sources
+    chosen = in_sources(train_idx, source, use)              # train only on the chosen sources
+    if not chosen.all():   # (when every position is used, skip a full copy of the indices)
+        train_idx = train_idx[chosen]
+    del chosen
+    val_used = in_sources(val_idx, source, use)              # val positions from those sources
     val_subset = val_idx[val_used][:args.val_subset]         # for --val-every
     gpus = f"{world} GPUs, {local_batch} positions each per step" if world > 1 else f"device {device}"
     log(f"training on {', '.join(args.sources)}: {len(train_idx):,} train / "
@@ -375,7 +405,9 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         shuffle = torch.Generator().manual_seed(args.seed * 1000 + epoch)
         order = train_idx[torch.randperm(len(train_idx), generator=shuffle, dtype=index_dtype)]
-        swap = torch.rand(len(order), generator=shuffle) < args.augment_prob   # same draw on resume
+        swap = torch.empty(len(order), dtype=torch.bool)   # same draw on resume
+        for i in range(0, len(order), CHUNK):   # in chunks: one float per position would be 4 bytes each
+            swap[i:i + CHUNK] = torch.rand(len(swap[i:i + CHUNK]), generator=shuffle) < args.augment_prob
         first = start_step if epoch == start_epoch else 0
         running, t0 = 0.0, time.time()
         bar = tqdm(range(first, steps_per_epoch), desc=f"epoch {epoch}/{args.epochs}",
