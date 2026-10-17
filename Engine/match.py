@@ -21,6 +21,15 @@ opponent, a fixed outside benchmark (Engine/deepmind_uci.py; set it up once with
 scripts/setup-deepmind.sh). It moves after one forward pass, so --movetime doesn't apply.
 
     uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m deepmind:270M --depth 4 --openings 16 --workers 2
+
+Bot against bot at equal time instead of equal depth (--bot-movetime: both search for that
+many seconds per move), for changes that trade evaluation quality for speed; --weights /
+--opponent-weights play a model file (best.pt or model.safetensors) under a NoFeat bot's
+name without registering it; --gpus spreads the workers over several GPUs, which also
+keeps timed searches from slowing each other down on a shared GPU:
+
+    uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m t2-sb-wsd-lichessgames-6.97m \\
+        --weights runs/new/best.pt --bot-movetime 0.5 --openings 128 --workers 16 --gpus 4
 """
 import argparse
 import math
@@ -59,14 +68,19 @@ def book_openings(n, plies, seed):
 
 def init_worker(args):
     global _bot, _opponent
-    _bot = load_bot(args.bot, depth=args.depth)
+    # spread the workers over --gpus GPUs (each worker process has its own CUDA context)
+    worker = mp.current_process()._identity[0] - 1 if mp.current_process()._identity else 0
+    device = f"cuda:{worker % args.gpus}" if args.gpus > 1 else None
+    timed = dict(movetime=args.bot_movetime) if args.bot_movetime else {}
+    _bot = load_bot(args.bot, depth=args.depth, weights=args.weights, device=device, **timed)
     if args.stockfish_levels:
         _opponent = chess.engine.SimpleEngine.popen_uci(args.stockfish)
     elif args.opponent.startswith("deepmind:"):
         _opponent = chess.engine.SimpleEngine.popen_uci(deepmind_command(args.opponent.split(":", 1)[1]),
                                                        timeout=300)   # loading and compiling the model
     else:
-        _opponent = load_bot(args.opponent, depth=args.opponent_depth or args.depth)
+        _opponent = load_bot(args.opponent, depth=args.opponent_depth or args.depth, weights=args.opponent_weights,
+                             device=device, **timed)
 
 
 def deepmind_command(model):
@@ -124,6 +138,11 @@ def main():
     parser.add_argument("--movetime", type=float, default=1.0, help="Stockfish seconds per move (default 1)")
     parser.add_argument("--stockfish", default=shutil.which("stockfish") or "stockfish")
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--weights", help="model file for the bot instead of its registered one")
+    parser.add_argument("--opponent-weights", help="model file for an opponent bot instead of its registered one")
+    parser.add_argument("--bot-movetime", type=float,
+                        help="both bots search this many seconds per move instead of to a depth (equal time)")
+    parser.add_argument("--gpus", type=int, default=1, help="spread the workers over this many GPUs (default 1)")
     args = parser.parse_args()
     args.stockfish_levels = ([int(x) for x in args.opponent.split(":", 1)[1].split(",")]
                              if args.opponent.startswith("stockfish:") else None)
@@ -131,7 +150,11 @@ def main():
     openings = book_openings(args.openings, args.plies, args.seed)
     levels = args.stockfish_levels or [None]
     tasks = [(o, bot_white, level, args.movetime) for o in openings for level in levels for bot_white in (True, False)]
-    print(f"{args.bot} (depth {args.depth}) vs {args.opponent}: {len(tasks)} games, {args.workers} workers")
+    limit = f"{args.bot_movetime:g} s/move" if args.bot_movetime else f"depth {args.depth}"
+    bot = f"{args.bot} ({args.weights})" if args.weights else args.bot
+    opponent = f"{args.opponent} ({args.opponent_weights})" if args.opponent_weights else args.opponent
+    print(f"{bot} ({limit}) vs {opponent}: {len(tasks)} games, {args.workers} workers"
+          + (f" on {args.gpus} GPUs" if args.gpus > 1 else ""))
 
     results = []
     # spawn: each worker starts clean and opens CUDA itself
