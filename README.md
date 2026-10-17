@@ -269,6 +269,13 @@ uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v3 --d-model 256 --hea
     --layers 8 --spatial-bias --smolgen --target winprob --dropout 0 --sources lichess lichess_games --data data/nofeat_lichess_all \
     --epochs 1 --batch-size 2048 --lr 1.2e-3 --warmup-steps 2000 --schedule wsd --decay-frac 0.2 --lr-floor 0.01 \
     --val-frac 0.005 --val-every 10000 --save-every 5000 --out Models/Weights/SlackFishV-T2-SG-WSD-LichessGames-8.87M
+# T3-SG-64-Muon (training): 64 tokens (--arch v4), width 384, 8 heads, smolgen, Muon; no colour-swap
+# augmentation, which --arch v4 makes a no-op (it is turned off automatically)
+uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v4 --d-model 384 --heads 8 --d-ff 1536 \
+    --layers 8 --spatial-bias --smolgen --optimizer muon --target winprob --dropout 0 \
+    --sources lichess lichess_games --data data/nofeat_lichess_all \
+    --epochs 1 --batch-size 2048 --lr 1.2e-3 --warmup-steps 2000 --schedule wsd --decay-frac 0.2 --lr-floor 0.01 \
+    --val-frac 0.005 --val-every 10000 --save-every 5000 --out Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-16.0M
 
 # 2b. Export for play and sharing: model.safetensors + config.json next to best.pt
 uv run python -m NoFeat.export Models/Weights/SlackFishV-T3/best.pt
@@ -291,7 +298,7 @@ epoch 2: train 0.8233  val MSE 0.7999  val MAE 315 cp  mirrored 309 cp  (27s)
 
 **Colour-swap augmentation:** half of the training positions (`--augment-prob 0.5`) are mirrored with colours, castling and turn swapped and the score negated (`NoFeat/augment.py`, equivalent to python-chess `board.mirror()`). `mirrored` in the log is validation MAE on the colour-swapped validation set. If it's far from the normal MAE, the model treats the two colours differently. SlackFishV-T1-3.25M, trained without augmentation, scores 136 cp as-is and 182 cp mirrored.
 
-Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--warmup-steps`, `--schedule wsd` with `--decay-frac` (flat after warmup, then a linear decay over the last fraction), `--lr-floor` (final LR as a fraction of `--lr`, default 0.1), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
+Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--warmup-steps`, `--schedule wsd` with `--decay-frac` (flat after warmup, then a linear decay over the last fraction), `--lr-floor` (final LR as a fraction of `--lr`, default 0.1), `--optimizer muon` (Muon for the 2D weight matrices inside the layers, AdamW for embeddings, norms, biases, bias tables and the head; Muon's updates are scaled to AdamW's size, so the same `--lr` and schedule apply), `--arch v4` (64 tokens: the model sees each position from the side to move and puts the castling rights in the rook tokens, so it's colour-symmetric by construction and `--augment-prob` is forced to 0), `--smolgen` (with `--spatial-bias`, on v3 or v4), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
 
 **Multiple GPUs:** run the same command under `uv run torchrun --nproc-per-node N -m NoFeat.train ...`; plain `python -m NoFeat.train` still uses one GPU (or the CPU). Each GPU runs its own process with a full copy of the model (PyTorch `DistributedDataParallel`), takes an equal slice of every step's batch, and gradients are averaged after each backward pass. `--batch-size` is the global batch and must divide evenly by N, so a run on N GPUs takes the same steps with the same LR schedule as on one, and a checkpoint resumes on any number of GPUs. With dropout off, a 4-GPU run follows the 1-GPU run's loss and validation curves within run-to-run noise, and on one GPU the code reproduces the single-GPU trainer bit for bit (in PyTorch's deterministic mode). Validation is split across the GPUs; only rank 0 prints, logs to W&B and writes checkpoints. A packed `--data` folder is memory-mapped, so the N processes share one copy of it in the page cache instead of each holding ~15 GB.
 
@@ -367,6 +374,7 @@ All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine de
 | **T2-SB-WSD-LichessGames-6.97M** | as T2-SB-W-Lichess | Lichess + Lichess games (828.2M) | win probability (BCE) | 50% | 1 | 4.2 h (4× 4090, bf16) | **95.0 cp (lichess), 94.6 (games), 94.8 mirrored** |
 | T2-H8-WSD-LichessGames-6.69M | as T2-SB-WSD-LichessGames, 8 heads of 32 | same (828.2M) | win probability (BCE) | 50% | 1 | 3.8 h (4× 4090, bf16) | 95.3 cp (lichess), 94.7 (games), 94.9 mirrored |
 | **T2-SG-WSD-LichessGames-8.87M** | as T2-SB-WSD-LichessGames + smolgen, 8.87M | same (828.2M) | win probability (BCE) | 50% | 1 | 5.5 h (4× 4090, bf16) | **87.5 cp (lichess), 88.9 (games), 88.2 mirrored** |
+| T4-SB-WSD-LichessGames-6.93M | as T2-SB-WSD-LichessGames on 64 tokens (`--arch v4`), no augmentation | same (828.2M) | win probability (BCE) | none (symmetric) | 1 | 3.5 h (4× 4090, bf16) | 92.3 cp (lichess), 92.9 (games) |
 
 Val MAE by epoch:
 
@@ -460,6 +468,9 @@ The bias gave a large head start: through ~300k steps it was 13–18 cp ahead, m
 | **T2-SB-WSD-LichessGames-6.97M vs T2-SB-W-Lichess-6.97M** (256 games: 128 openings) | **218 / 256 (85%)** | **204 / 28 / 24** | **+303 (+255 to +362)** |
 | **T2-SG-WSD-LichessGames-8.87M vs T2-SB-WSD-LichessGames-6.97M** (256 games: 128 openings) | **162.5 / 256 (63%)** | **135 / 55 / 66** | **+96 (+58 to +136)** |
 | **the same at equal time, 0.5 s/move** (256 games) | **152.5 / 256 (60%)** | **119 / 67 / 70** | **+67 (+31 to +106)** |
+| the same at equal time with the CUDA-graph evaluator (256 games) | 160.5 / 256 (63%) | 126 / 69 / 61 | +90 (+54 to +128) |
+| T4-SB-WSD-LichessGames-6.93M (64 tokens) vs T2-SB-WSD-LichessGames-6.97M (256 games) | 137.5 / 256 (54%) | 102 / 71 / 83 | +26 (−10 to +63) |
+| the same at equal time, 0.5 s/move, CUDA-graph evaluator (256 games) | 146.5 / 256 (57%) | 116 / 61 / 79 | +51 (+14 to +89) |
 | T2-H8-WSD-LichessGames-6.69M vs T2-SB-WSD-LichessGames-6.97M (256 games) | 138 / 256 (54%) | 108 / 60 / 88 | +27 (−10 to +65) |
 
 The two WSD models only differ in data: the month of Lichess games bought just 1.6 cp on the evaluation-database positions both validate on (96.6 → 95.0), but 187 Elo over the board. The game positions are lopsided (median |eval| 326 cp against 77, from lower-rated play with blunders), which is probably close to what the search meets after a bad move, and what balanced positions people chose to analyse don't cover; that's a hypothesis, not tested. The WSD recipe on its own (T2-SB-WSD-Lichess, same data as before minus the CSVs) is about +115 by the chain of the two matches.
@@ -623,8 +634,20 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 15. **`hash()` of a tuple of 64-bit ints is not a position key.** Python's int hash is the value modulo 2⁶¹ − 1, so a1 and f8 collide. It went unnoticed in every search until pondering crashed on it.
 16. **Four consumer GPUs: 10× the 2080 Ti, if the batch and LR grow with them.** 4× RTX 4090 trained the t2-sb architecture at 52k positions/s with batch 2048 (16k on one 4090, ~5.6k on the 2080 Ti); a 393M-position pass took 2 h instead of 20. Scaling the learning rate linearly with the batch kept the quality, and warmup-stable-decay to 1% beat cosine to 10% by ~6 cp.
 17. **Analysed game positions were worth far more in play than in validation error.** Adding 435M positions from a month of analysed Lichess games gave 1.6 cp and +187 Elo; together with the new schedule the result is +303 Elo over the previous default, the largest gain since adding the Lichess evaluation database.
+**Search speed with the CUDA-graph evaluator** (fp16, RTX 4090, positions from real games, trained models):
+
+| Model | Batch 20 | Batch 32 | Batch 64 | vs t2-sb-wsd-lichessgames |
+|---|---|---|---|---|
+| t2-sb-wsd-lichessgames-6.97m (16 heads, 66 tokens) | 24,311/s | 37,624/s | 47,922/s | |
+| + smolgen (t2-sg-wsd-lichessgames-8.87m) | 18,600/s | 28,977/s | 36,920/s | −23% |
+| 8 heads | 26,660/s | 41,191/s | 53,557/s | +10–12% |
+| 64 tokens (T4-SB) | 29,321/s | 45,026/s | 60,964/s | +20–27% |
+
+**Muon vs AdamW** (`--optimizer muon`; ChessTransformerV1, an 80M-position sample of the combined data, the WSD recipe, 4 GPUs, lr 1.2e-3 for both): Muon reached 121.2 cp validation MAE against AdamW's 150.3 (MSE −35%), ahead at every checkpoint (231 vs 250 cp after 4M positions), at 7% more time per step; it matched AdamW's final error with about half the data. One short run on a small model: the gap may narrow over a full run.
+
 18. **A position-dependent attention bias paid for its cost.** Smolgen (Lc0's, scaled down to 1.9M parameters on top of the static bias, its output layer starting at zero) cut validation error by 6.5 cp on the same data and recipe, the largest gain from an architecture change, and unlike the static bias's head start it didn't fade over the run. It evaluates about a third slower at search batch sizes (measured with the eager evaluator), and still won by 67 Elo at equal time.
-19. **At search batch sizes the GPU is limited by launching kernels, not by the work.** On the 4090, 8 heads instead of 16 and 64 tokens instead of 66 were 15–30% faster at batch 256 but no faster at 20–64, where a forward pass is a couple of milliseconds of small kernels; extra small operations (64 tokens' flip, smolgen) cost more there than their arithmetic. CUDA graphs (the evaluator now records them) remove most of that overhead.
+19. **At search batch sizes the GPU is limited by launching kernels, not by the work.** On the 4090, 8 heads instead of 16 and 64 tokens instead of 66 were 15–30% faster at batch 256 but no faster at 20–64, where a forward pass is a couple of milliseconds of small kernels; extra small operations (64 tokens' flip, smolgen) cost more there than their arithmetic. CUDA graphs (the evaluator now records them) remove most of that overhead: with them, 8 heads searches 10–12% faster, 64 tokens 20–27% faster, and smolgen's cost fell from 36% to 23% (its equal-time win rose from +67 to +90).
+20. **Muon beat AdamW by a wide margin on a short run.** On V1 with the same schedule and learning rate (Muon's step scaled to AdamW's), Muon cut validation error by 29 cp over 80M positions and was ahead from the first checkpoint, for 7% more time per step.
 
 Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (smolgen) or a shared relative one, a learning rate scaled to model width, more epochs over the full data, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, a better ranking of the opponent's replies for pondering (12% of moves ranked 11th or worse), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
 

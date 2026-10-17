@@ -27,16 +27,23 @@ do) and to give the search a move ordering, or a way to look at fewer moves.
 ## Ablations of t2-sb-wsd-lichessgames (same data and recipe; 256-game matches against it)
 
 - **Smolgen** (done, the new default `t2-sg-wsd-lichessgames-8.87m`): val 88.2 vs 94.75 cp,
-  +96 Elo at depth 2, +67 at 0.5 s/move, though ~36% slower at search batch sizes with the eager
-  evaluator and 23% slower to train. Re-measure its search speed and equal-time result with the
-  CUDA-graph evaluator; try it in T3.
+  +96 Elo at depth 2, +67 at 0.5 s/move (+90 with the CUDA-graph evaluator), 23% slower to train.
 - **8 heads instead of 16** (done, `t2-h8-wsd-lichessgames-6.69m`): val 95.0 cp, +27 Elo (−10
-  to +65) at depth 2: a tie; 10% faster training, the same search speed. Worth it only to save
-  training time.
-- **64 tokens instead of 66** (`claude/64-tokens`, full run in progress): the model flips
+  to +65) at depth 2: a tie; 10% faster training, and 10-12% faster search with CUDA graphs.
+- **64 tokens instead of 66** (done, `--arch v4`, not published): the model flips
   Black-to-move positions inside `forward()`, castling rights become rook tokens 14 / 15, no
-  augmentation. No speed gain on the 4090 at search batch sizes, nor in training; left to test:
-  whether seeing positions from the side to move evaluates better.
+  augmentation. Val 92.6 vs 94.75 cp; +26 Elo (−10 to +63) at depth 2, +51 (+14 to +89) at
+  0.5 s/move with the CUDA-graph evaluator, where it searches 20-27% faster; 22% faster training.
+- **Search speed with CUDA graphs** (done): smolgen −23% (from −36% eager), 8 heads +10-12%
+  (from ±0), 64 tokens +20-27%. Smolgen's equal-time win rose to +90.
+
+## In progress: T3 with everything that helped
+
+`--arch v4 --d-model 384 --heads 8 --d-ff 1536 --spatial-bias --smolgen --optimizer muon`, the
+WSD recipe at lr 1.2e-3 (Muon's step scaled to AdamW's), full data, no augmentation (v4):
+15,985,153 parameters. Then depth-2 and equal-time matches against t2-sg-wsd-lichessgames-8.87m.
+Changes four things at once (width, 64 tokens, Muon, and 8 heads, which is T3's own count), so a
+win shows the combination works, not each part's share.
 
 ## Deferred
 
@@ -126,6 +133,12 @@ with width for future large runs (roughly lr x 256 / d_model as a starting point
   on the desktop; all recovered within seconds. Watch for it costing time in bullet.
 
 ## Muon optimizer
+
+**Done, first test:** `--optimizer muon` in `NoFeat/train.py` (`torch.optim.Muon`, 2D matrices
+inside the layers; the rest on AdamW; `match_rms_adamw`, so the same `--lr`). ChessTransformerV1,
+80M positions, WSD at lr 1.2e-3: val MAE 121.2 cp vs 150.3 with AdamW, ahead at every checkpoint,
+7% slower per step. Next: in the T3 run above; then on the default's architecture alone, and a
+higher learning rate for Muon. The notes below were the plan.
 
 **Idea:** train the weight matrices with Muon instead of AdamW. Muon orthogonalizes each
 matrix's momentum (a few Newton-Schulz iterations) before stepping, so every direction of
