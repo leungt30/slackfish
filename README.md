@@ -474,6 +474,12 @@ T2-W-Lichess at depth 3 against each level:
 
 At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It still scored 44% against the strongest level tested, so the top of its range isn't pinned down. Depth 3 adds roughly 300 Elo, though part of that gap is Stockfish getting 1 s instead of 0.5 s. A depth-3 move takes a median 0.73 s (1.7 s at most) on the desktop.
 
+
+### Benchmark: DeepMind's searchless transformer
+
+`Engine/match.py BOT deepmind:270M` plays against the 270M-parameter action-value transformer from [Ruoss et al. 2024](https://arxiv.org/abs/2402.04494) ([google-deepmind/searchless_chess](https://github.com/google-deepmind/searchless_chess), Apache 2.0): trained on 15 billion Stockfish 16 move evaluations, it scores every legal move in one forward pass and plays the best, with no search (the paper: Lichess blitz 2895 against humans). It's an outside yardstick, not one of our bots: `Engine/deepmind_uci.py` runs it as a UCI engine in its own JAX environment, which `scripts/setup-deepmind.sh` sets up once in `external/searchless_chess` (gitignored; 2.0 GB checkpoint, ~5 GB venv; `9M` and `136M` too). On the RTX 2080 Ti it takes ~0.25 s a move and ~0.6 GB of GPU memory.
+
+A first 4-game check (2 openings, depth 3): t2-sb-wsd-lichessgames-6.97m scored 0.5/4 (one draw, three losses). That's a smoke test, not a result.
 ### Lichess bot results
 
 [slackfish-bot](https://lichess.org/@/slackfish-bot) (t2-w-lichess-6.41m, opening book, timed search with pondering) played rated games against other Lichess bots in October 2026. "Original" is the alpha-beta search before PVS / null move / LMR, "pruned" after.
@@ -594,7 +600,8 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── bots.py              # Model registry, feature encoding, evaluator, minimax search
 │   ├── play.py              # Game runner + CLI (bot/human vs bot/human)
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
-│   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
+│   ├── match.py             # Strength tests: bot vs bot, vs Stockfish levels, or vs DeepMind's model
+│   ├── deepmind_uci.py      # DeepMind's searchless transformer as a UCI benchmark opponent
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
 │   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
 │   ├── ponderstats.py       # Ponder hit rate by reply rank, from the Lichess bot's logs

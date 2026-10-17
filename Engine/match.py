@@ -15,6 +15,12 @@ Against Stockfish, its UCI_LimitStrength / UCI_Elo levels (1320-3190) are the
 anchors, and the bot's rating is fitted by maximum likelihood over all games.
 That scale is calibrated against engine rating lists, not human ratings.
 Stockfish needs to be on PATH (or pass --stockfish).
+
+deepmind:9M / deepmind:136M / deepmind:270M is DeepMind's searchless transformer as the
+opponent, a fixed outside benchmark (Engine/deepmind_uci.py; set it up once with
+scripts/setup-deepmind.sh). It moves after one forward pass, so --movetime doesn't apply.
+
+    uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m deepmind:270M --depth 4 --openings 16 --workers 2
 """
 import argparse
 import math
@@ -56,8 +62,21 @@ def init_worker(args):
     _bot = load_bot(args.bot, depth=args.depth)
     if args.stockfish_levels:
         _opponent = chess.engine.SimpleEngine.popen_uci(args.stockfish)
+    elif args.opponent.startswith("deepmind:"):
+        _opponent = chess.engine.SimpleEngine.popen_uci(deepmind_command(args.opponent.split(":", 1)[1]),
+                                                       timeout=300)   # loading and compiling the model
     else:
         _opponent = load_bot(args.opponent, depth=args.opponent_depth or args.depth)
+
+
+def deepmind_command(model):
+    """The UCI command for DeepMind's model, in the environment scripts/setup-deepmind.sh makes."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.environ.get("SEARCHLESS_CHESS", os.path.join(os.path.dirname(here), "external", "searchless_chess"))
+    python = os.path.join(root, ".venv", "bin", "python")
+    if not os.path.exists(python):
+        raise SystemExit(f"{python} not found: run scripts/setup-deepmind.sh (or set SEARCHLESS_CHESS)")
+    return [python, os.path.join(here, "deepmind_uci.py"), "--model", model, "--dir", root]
 
 
 def play(task):
@@ -69,7 +88,7 @@ def play(task):
     while not game_over(board) and board.fullmove_number <= MAX_MOVES:
         if (board.turn == chess.WHITE) == bot_white:
             move = _bot.choose_move(board)
-        elif level is not None:
+        elif level is not None or isinstance(_opponent, chess.engine.SimpleEngine):
             move = _opponent.play(board, chess.engine.Limit(time=movetime), game=(opening.epd(), bot_white, level)).move
         else:
             move = _opponent.choose_move(board)
@@ -96,7 +115,7 @@ def fit_rating(results):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bot", help="bot name from Engine/bots.py")
-    parser.add_argument("opponent", help="another bot, or stockfish:ELO[,ELO...]")
+    parser.add_argument("opponent", help="another bot, stockfish:ELO[,ELO...], or deepmind:9M|136M|270M")
     parser.add_argument("--depth", type=int, default=2, help="search depth for the bot (default 2)")
     parser.add_argument("--opponent-depth", type=int, help="search depth for an opponent bot (default: --depth)")
     parser.add_argument("--openings", type=int, default=64, help="openings, each played with both colours (default 64)")
