@@ -58,7 +58,10 @@ def main():
     p.add_argument("--dir", default=os.environ.get("SEARCHLESS_CHESS", DEFAULT_DIR),
                    help="the searchless_chess clone with checkpoints/ (default external/searchless_chess, or $SEARCHLESS_CHESS)")
     args = p.parse_args()
-    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")   # share the GPU with our bots
+    # Share the GPU with our bots and other workers: allocate only what's needed, ~1.2 GB for
+    # the 270M at the same speed (JAX's default pool grew to ~4.3 GB, and three at once failed)
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
     import chess
 
     engine, board = None, chess.Board()
