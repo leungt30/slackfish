@@ -18,7 +18,9 @@ Stockfish needs to be on PATH (or pass --stockfish).
 
 deepmind:9M / deepmind:136M / deepmind:270M is DeepMind's searchless transformer as the
 opponent, a fixed outside benchmark (Engine/deepmind_uci.py; set it up once with
-scripts/setup-deepmind.sh). It moves after one forward pass, so --movetime doesn't apply.
+scripts/setup-deepmind.sh). It moves after one forward pass, so --movetime doesn't apply;
+deepmind:270M:fp32 runs it in full precision (same moves, slower). It's GPU-bound, so use
+--workers 2 at most: four DeepMind processes together were no faster than one.
 
     uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m deepmind:270M --depth 4 --openings 16 --workers 2
 """
@@ -28,6 +30,7 @@ import multiprocessing as mp
 import os
 import shutil
 import sys
+import time
 
 import chess
 import chess.engine
@@ -69,14 +72,17 @@ def init_worker(args):
         _opponent = load_bot(args.opponent, depth=args.opponent_depth or args.depth)
 
 
-def deepmind_command(model):
-    """The UCI command for DeepMind's model, in the environment scripts/setup-deepmind.sh makes."""
+def deepmind_command(spec):
+    """The UCI command for DeepMind's model, in the environment scripts/setup-deepmind.sh makes.
+    spec is MODEL or MODEL:fp32 (default fp16 with an fp32 fallback, the same moves ~2.4x faster)."""
+    model, _, precision = spec.partition(":")
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.environ.get("SEARCHLESS_CHESS", os.path.join(os.path.dirname(here), "external", "searchless_chess"))
     python = os.path.join(root, ".venv", "bin", "python")
     if not os.path.exists(python):
         raise SystemExit(f"{python} not found: run scripts/setup-deepmind.sh (or set SEARCHLESS_CHESS)")
-    return [python, os.path.join(here, "deepmind_uci.py"), "--model", model, "--dir", root]
+    return [python, os.path.join(here, "deepmind_uci.py"), "--model", model, "--dir", root,
+            "--precision", precision or "fp16"]
 
 
 def play(task):
@@ -115,7 +121,7 @@ def fit_rating(results):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("bot", help="bot name from Engine/bots.py")
-    parser.add_argument("opponent", help="another bot, stockfish:ELO[,ELO...], or deepmind:9M|136M|270M")
+    parser.add_argument("opponent", help="another bot, stockfish:ELO[,ELO...], or deepmind:9M|136M|270M[:fp32]")
     parser.add_argument("--depth", type=int, default=2, help="search depth for the bot (default 2)")
     parser.add_argument("--opponent-depth", type=int, help="search depth for an opponent bot (default: --depth)")
     parser.add_argument("--openings", type=int, default=64, help="openings, each played with both colours (default 64)")
@@ -124,6 +130,8 @@ def main():
     parser.add_argument("--movetime", type=float, default=1.0, help="Stockfish seconds per move (default 1)")
     parser.add_argument("--stockfish", default=shutil.which("stockfish") or "stockfish")
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--hours", type=float,
+                        help="stop after this long and report the games finished (games in progress are dropped)")
     args = parser.parse_args()
     args.stockfish_levels = ([int(x) for x in args.opponent.split(":", 1)[1].split(",")]
                              if args.opponent.startswith("stockfish:") else None)
@@ -133,13 +141,21 @@ def main():
     tasks = [(o, bot_white, level, args.movetime) for o in openings for level in levels for bot_white in (True, False)]
     print(f"{args.bot} (depth {args.depth}) vs {args.opponent}: {len(tasks)} games, {args.workers} workers")
 
-    results = []
+    results, deadline = [], time.time() + args.hours * 3600 if args.hours else None
     # spawn: each worker starts clean and opens CUDA itself
     with mp.get_context("spawn").Pool(args.workers, init_worker, (args,)) as pool:
-        for i, result in enumerate(pool.imap_unordered(play, tasks), 1):
+        pending = pool.imap_unordered(play, tasks)
+        for i in range(1, len(tasks) + 1):
+            try:
+                result = pending.next(timeout=None if deadline is None else max(deadline - time.time(), 0.001))
+            except mp.TimeoutError:
+                print(f"  time limit ({args.hours:g} h): stopping after {len(results)} games", flush=True)
+                break
             results.append(result)
-            if i % 10 == 0 or i == len(tasks):
+            if args.hours or i % 10 == 0 or i == len(tasks):
                 print(f"  {i}/{len(tasks)} games, score {sum(s for _, s in results):g}", flush=True)
+    if not results:
+        raise SystemExit("no games finished")
 
     for level in levels:
         scores = [s for l, s in results if l == level]

@@ -28,7 +28,7 @@ fi
 # training and notebook dependencies). constants.py imports apache_beam and grain.
 "$UV" pip install -q --python "$DIR/.venv/bin/python" \
     "jax[cuda12]==0.4.38" "dm-haiku==0.0.13" orbax-checkpoint optax chex jaxtyping \
-    grain apache-beam chess numpy scipy absl-py
+    grain apache-beam chess numpy scipy absl-py jmp
 
 mkdir -p "$DIR/checkpoints"
 for m in "${MODELS[@]}"; do
