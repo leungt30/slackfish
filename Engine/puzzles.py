@@ -4,7 +4,7 @@ from DeepMind's searchless chess paper (Ruoss et al. 2024, Table 1), scored the 
 as their src/puzzles.py, so the numbers line up with the paper's.
 
     uv run python Engine/puzzles.py t2-sb-wsd-lichessgames-6.97m --depth 4
-    uv run python Engine/puzzles.py deepmind:270M --limit 1000
+    uv run python Engine/puzzles.py deepmind:270M --limit 1000 --workers 2
 
 A puzzle starts at the end of its game's PGN; the first move of its solution is the
 opponent's, then the engine plays every other move. It's solved only if each of those
@@ -63,7 +63,7 @@ def solve(puzzle):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("engine", help="bot name from Engine/bots.py, or deepmind:9M|136M|270M")
+    p.add_argument("engine", help="bot name from Engine/bots.py, or deepmind:9M|136M|270M[:fp32]")
     p.add_argument("--depth", type=int, default=3, help="search depth for our bots (default 3)")
     p.add_argument("--movetime", type=float, help="seconds per move instead of a fixed depth (our bots)")
     p.add_argument("--limit", type=int, help="only the first N puzzles (default all 10,000)")
