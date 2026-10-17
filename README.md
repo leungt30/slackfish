@@ -137,7 +137,7 @@ A much stronger book is [Cerebellum Light](https://zipproth.de/Brainfish/downloa
 
 ### On Lichess
 
-[slackfish-bot](https://lichess.org/@/slackfish-bot) plays on Lichess as a BOT account through `Engine/lichess.py`. Anyone can challenge it ([challenge link](https://lichess.org/?user=slackfish-bot#friend)) to standard chess with a 30 s to 30 min clock; it plays one game at a time and declines the rest with a reason. `scripts/lichess-bot.sh` runs it in the background:
+[slackfish-bot](https://lichess.org/@/slackfish-bot) plays on Lichess as a BOT account through `Engine/lichess.py`. Anyone can challenge it ([challenge link](https://lichess.org/?user=slackfish-bot#friend)) to standard chess with a 30 s to 30 min clock and an increment (it declines 1+0, 5+0 and other no-increment clocks); it plays one game at a time and declines the rest with a reason. `scripts/lichess-bot.sh` runs it in the background:
 
 ```bash
 scripts/lichess-bot.sh start                     # online, accepting challenges
@@ -498,6 +498,8 @@ Ratings after 83 games: blitz 2044, bullet 2066 (bot-pool ratings, not comparabl
 - **Clock use.** Lichess charged ~0.2 s per move beyond the bot's own thinking. With 1/25 of the clock per move it finished 3+2 games with 160–265 s left while opponents ran low (it couldn't use the time: depth 4 didn't fit, depth 3 took ~1 s); `Engine/lichess.py` now spends 1/12 (1/20 under 3 minutes), and in bullet it still finishes with 28–68 s against the opponents' 4–47.
 - **Opening books.** Of 10 common amateur mistakes (Damiano 2...f6, the wayward queen, Englund gambit, Blackburne Shilling...), gm2001 has the punishing reply for 1 and Cerebellum Light for 7; the other 3 (Scholar's mate, Legal's trap, the elephant trap) are short tactics the search finds anyway.
 - **Practicalities.** Lichess limits each bot to 100 games a day against other bots, and many bots decline bot challenges, so a challenge list needs 15–20 names to keep a series going.
+
+**With t2-sb-wsd-lichessgames-6.97m** (from 2026-10-15; depth 5 blitz / 4 bullet, 3 pondered replies, the RTX 2080 Ti desktop), over about 170 rated games against bots mostly rated 1850–2400: **blitz 2170 → 2302, bullet 2111 → 2301**, the bot's best ratings so far (2302 / 2296 on 2026-10-16, after 134 blitz and 165 bullet games in all). The one recent loss on time came from a rated 1+0 game another bot sent between series: the time budget assumes an increment, and ~0.2 s/move of lag isn't budgeted, so clocks without increment are now declined (`--allow-no-increment` to accept them).
 
 ### Lichess bot: time management and pondering (t2-sb-w-lichess-6.97m, RTX 2080 Ti)
 

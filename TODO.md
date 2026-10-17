@@ -67,24 +67,6 @@ scales the learning rate down with width).
 time each on the 2080 Ti). If the lower learning rate leads early on, scale the learning rate down
 with width for future large runs (roughly lr x 256 / d_model as a starting point).
 
-## WSD models: make the default, document
-
-The 4-GPU machine trained two models with a WSD (warmup-stable-decay) schedule and uploaded
-them to Hugging Face (mathemagicianz/slackfish); their training code is not on GitHub yet.
-
-- `SlackFishV-T2-SB-WSD-Lichess-6.97M` (Lichess eval DB only, val MAE 96.6 cp): 86/128
-  (+124 Elo) vs t2-sb-w-lichess-6.97m at depth 2.
-- `SlackFishV-T2-SB-WSD-LichessGames-6.97M` (+ Sept 2026 Lichess games, val MAE 94.7 cp;
-  +303 Elo vs t2-sb-w-lichess per the uploader). The Lichess bot has played it since
-  2026-10-15: blitz 2170 -> 2302, bullet 2111 -> 2301 over ~170 rated games.
-
-Both are registered in `Engine/bots.py` (`t2-sb-wsd-lichess-6.97m`,
-`t2-sb-wsd-lichessgames-6.97m`) on branch claude/wsd-model, not merged. To do: make
-`t2-sb-wsd-lichessgames-6.97m` the default (GUI, lichess.py, lichess-bot.sh presets), add
-it to the README and the HF model card. Open question for the owner: write up the training
-from the HF commit messages/config.json now, or wait for the training code to be pushed
-(then rebase: it will likely touch NoFeat/train.py, Engine/bots.py and README.md).
-
 ## Lichess bot fixes
 
 - **Aborted games count toward --games.** An abort (opponent never moved) is logged as
@@ -117,8 +99,7 @@ Turing (check it's stable, or run it in fp32: it's a few small matmuls per matri
 
 **How to test:** add `--optimizer {adamw,muon}` to `NoFeat/train.py` (`torch.optim.Muon` if
 our PyTorch has it, else a ~50-line reference implementation). Two runs on the same 50M
-sample (`--limit 50000000 --epochs 1`), same model and schedule (WSD, once the WSD training
-code from the 4-GPU machine is merged; add Muon after it to avoid conflicts): compare the
+sample (`--limit 50000000 --epochs 1`), same model and schedule (WSD, `--schedule wsd`): compare the
 learning curves, then a 128-game match if Muon gets there faster.
 
 **Also worth a look:** schedule-free AdamW (no schedule: built-in weight averaging, an
