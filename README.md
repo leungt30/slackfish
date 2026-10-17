@@ -477,9 +477,26 @@ At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It 
 
 ### Benchmark: DeepMind's searchless transformer
 
-`Engine/match.py BOT deepmind:270M` plays against the 270M-parameter action-value transformer from [Ruoss et al. 2024](https://arxiv.org/abs/2402.04494) ([google-deepmind/searchless_chess](https://github.com/google-deepmind/searchless_chess), Apache 2.0): trained on 15 billion Stockfish 16 move evaluations, it scores every legal move in one forward pass and plays the best, with no search (the paper: Lichess blitz 2895 against humans). It's an outside yardstick, not one of our bots: `Engine/deepmind_uci.py` runs it as a UCI engine in its own JAX environment, which `scripts/setup-deepmind.sh` sets up once in `external/searchless_chess` (gitignored; 2.0 GB checkpoint, ~5 GB venv; `9M` and `136M` too). On the RTX 2080 Ti it takes ~0.25 s a move and ~0.6 GB of GPU memory.
+`Engine/match.py BOT deepmind:270M` plays against the 270M-parameter action-value transformer from [Ruoss et al. 2024](https://arxiv.org/abs/2402.04494) ([google-deepmind/searchless_chess](https://github.com/google-deepmind/searchless_chess), Apache 2.0): trained on 15 billion Stockfish 16 move evaluations, it scores every legal move in one forward pass and plays the best, with no search (the paper: Lichess blitz 2895 against humans). It's an outside yardstick, not one of our bots: `Engine/deepmind_uci.py` runs it as a UCI engine in its own JAX environment, which `scripts/setup-deepmind.sh` sets up once in `external/searchless_chess` (gitignored; 2.0 GB checkpoint, ~5 GB venv; `9M` and `136M` too). On the RTX 2080 Ti it takes ~0.06 s a move (~0.25 s in fp32, see Speed below) and ~1.2 GB of GPU memory per process (the wrapper uses JAX's `platform` allocator; JAX's default memory pool grew to ~4.3 GB, and three at once ran out).
 
-A first 4-game check (2 openings, depth 3): t2-sb-wsd-lichessgames-6.97m scored 0.5/4 (one draw, three losses). That's a smoke test, not a result.
+**Results** (t2-sb-wsd-lichessgames-6.97m, book openings sampled 10 plies deep, each with both colours, RTX 2080 Ti):
+
+| Our depth | Games | Score | W / D / L | Elo difference (95%) |
+|---|---|---|---|---|
+| 1 | 32 | 1.5 / 32 (5%) | 0 / 3 / 29 | about −520 |
+| 3 | 128 | 39.5 / 128 (31%) | 14 / 51 / 63 | −140 (−191 to −95) |
+| 6 | 77 (6 h) | **61.5 / 77 (80%)** | **48 / 27 / 2** | **+239 (+179 to +314)** |
+
+At depth 3 (~0.3 s a move against its ~0.06 s) it is still clearly ahead, though 40% of the games were drawn. With one evaluation per move, the 270M (40× our parameters, trained on 15 billion move evaluations) is far stronger: our evaluation alone is no match for it. With search to depth 6, the bot wins 80% and lost only 2 of 77, so search is worth several hundred Elo over the evaluator here. The paper rates the 270M at 2299 against Lichess bots, about where slackfish-bot (depth 4–5) sits; depth 6 is too slow for Lichess clocks on this GPU (~6 s a move).
+
+**Speed.** DeepMind's model is GPU-bound: four processes together managed 3.7 moves/s, no more than one alone (3.9), so use `--workers 2` at most (2 was 10% faster than 1 at depth 1). The wrapper pads each batch of legal moves to 8/16/32/48/64 instead of always 64 (1.8×), and by default runs the linear layers in fp16 with Haiku's mixed precision (`jmp`), redoing in fp32 any move whose prediction overflows to NaN (about 1 position in 30 has one; `np.argmax` would otherwise pick it): 16.7 moves/s, the same moves as fp32 on 400 positions, 4.2× the original. All-fp16 doesn't work: the layer norms overflow and the predictions go flat (24/200 moves matched). `deepmind:270M:fp32` runs it in full precision.
+
+**Puzzles.** `Engine/puzzles.py ENGINE` scores a bot (`--depth` / `--movetime`) or `deepmind:MODEL` on the paper's 10,000 Lichess puzzles (`external/searchless_chess/data/puzzles.csv`, downloaded by the setup script), the same way as DeepMind's `src/puzzles.py`: the engine must find every solution move (any mate counts), and the result is broken down by puzzle rating. Paper: 9M 88.9%, 136M 94.5%, 270M 95.4%, Stockfish 16 at 1.5 s 100%. Our bot does about 4 puzzles/s at depth 3 with 6 workers; the 270M about 2/s with 4 workers.
+
+| First 200 puzzles | <1000 | 1000–1499 | 1500–1999 | 2000–2499 | All |
+|---|---|---|---|---|---|
+| t2-sb-wsd-lichessgames-6.97m, depth 3 | 97.9% | 100% | 94.4% | 74.4% | 92.5% |
+| DeepMind 270M (no search) | 100% | 98.3% | 98.1% | 84.6% | 96.0% |
 ### Lichess bot results
 
 [slackfish-bot](https://lichess.org/@/slackfish-bot) (t2-w-lichess-6.41m, opening book, timed search with pondering) played rated games against other Lichess bots in October 2026. "Original" is the alpha-beta search before PVS / null move / LMR, "pruned" after.
@@ -565,6 +582,8 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 | New search vs old one ply deeper (d2 vs d3) | 5 / 16 (2 / 6 / 8). One more full ply still wins, but the old search used 4× the time per move. |
 | **New search vs old, equal time (d3 vs d3, 1.30 vs 1.27 s per move)** | **11 / 16 (8 / 6 / 2), about +135 Elo** |
 | **float16 weights instead of autocast** | 1.3–1.45× faster (3,064 → 3,831 positions/s at batch 20, 3,628 → 5,254 at 256) and closer to float32 (0.11 cp mean error vs 0.17). Autocast turns off `nn.TransformerEncoder`'s fused inference path; float16 weights don't. bfloat16 weights were as fast but 10× less accurate (1.06 cp); `torch.compile` and CUDA graphs added nothing on top. |
+| **Where a search's time goes** (depth 4/5 on 25 positions, RTX 2080 Ti, t2-sb-wsd-lichessgames) | Model calls 70–71%, FEN encoding 13%, the search itself 16–17%. Depth 4 made 6,683 calls for 101,685 positions: median batch 5. A call took ~2.9 ms at any batch size up to 32 (21k positions/s at batch 512, ~4.8k in the search): launching each kernel from Python, not the GPU, set the time. |
+| **CUDA graphs + encoding from bitboards** | The V3 model recorded as one CUDA graph per batch size (8–512, padded) and replayed: 2.79 → 1.16 ms a call at batch 8. Tokens read from the board's bitboards instead of building and parsing a FEN: 41.9 → 3.4 µs a position, identical on 23,575 positions. Together: depth 4 1.18 → 0.69 s a move, depth 5 3.59 → 2.10 (1.7×), the same move in 25/25 positions at both. Scores move by ≤ 0.8 cp (fp16 kernels differ with batch shape; eager batches already differed by 0.3). Recording takes 0.5 s at load. (On the laptop, with `nn.TransformerEncoder`'s fused path, CUDA graphs had added nothing, see above.) |
 | **Profiling again** (float16, depth 3) | 94–96% of a search is the network, and 512-position batches take 16× as long as 32-position ones: the GPU is saturated even by the search's small batches. So searching in a faster language would save ~5%, and two parallel searches each run at half speed. |
 | **Iteration cost** (a timed search deepening to depth 5–6) | Uneven between odd and even depths: depth 3 → 4 cost 15–18× in middlegames, 2 → 3 only 1–2.5×. A time manager that assumed "like the last step" started depth 4 with ~7 s of a 9 s budget left and threw it away unfinished; predicting each step from the same step two depths back (with per-depth minimums) cut middlegame moves from 8.7 s to ~1 s at the same depth. |
 | **PVS, null move, LMR, killer/history ordering, check extensions** (`Bot._search`) | Depth 4 on four positions: 73.4 s → 15.6 s (171k → 33k evals), identical moves. With null move and LMR from depth 3 instead of 2 it was only 33.2 s, and no better than the old search under a time limit. |
@@ -604,6 +623,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
 │   ├── match.py             # Strength tests: bot vs bot, vs Stockfish levels, or vs DeepMind's model
 │   ├── deepmind_uci.py      # DeepMind's searchless transformer as a UCI benchmark opponent
+│   ├── puzzles.py           # Puzzle accuracy on the DeepMind paper's 10,000 Lichess puzzles
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
 │   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
 │   ├── ponderstats.py       # Ponder hit rate by reply rank, from the Lichess bot's logs
@@ -619,7 +639,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── prepare_data.py      # CSVs (+ Lichess evals and games) -> .npz or a packed folder
 │   ├── train.py             # Training loop (one GPU, or several under torchrun)
 │   ├── export.py            # Checkpoint -> model.safetensors + config.json
-│   └── evaluator.py         # Load a model for play
+│   └── evaluator.py         # Load a model for play (CUDA graphs on GPU)
 ├── Models/
 │   ├── Scalers/             # scaler_X.pkl, scaler_Y.pkl (v1/v2), scaler_Y_9M.pkl (v5)
 │   ├── Training/            # Model definitions and training scripts
