@@ -1,6 +1,6 @@
 # TODO
 
-**Current baseline for every experiment:** t2-sb-wsd-lichessgames-6.97m (the default bot):
+**Baseline for the ablations below:** t2-sb-wsd-lichessgames-6.97m (the default until smolgen):
 the t2-sb architecture on the Lichess evaluation database + September 2026 games (828M
 positions), 4 GPUs, batch 2048, lr 1.2e-3, WSD to 1%, 4.2 h; val MAE 95.0 (lichess) /
 94.6 cp (games). Ablations use its exact recipe (same data, seed and so the same validation
@@ -24,21 +24,25 @@ do) and to give the search a move ordering, or a way to look at fewer moves.
 - Test as an ablation of the default: same recipe with the policy loss, compare val MAE,
   move accuracy, and a 256-game match.
 
-## In progress (worktrees, as ablations of the default)
+## Ablations of t2-sb-wsd-lichessgames (same data and recipe; 256-game matches against it)
 
-- **8 attention heads instead of 16** (`claude/8-heads`): 20M-position test 189.9 vs
-  188.7 cp, 14% faster training (not the 18% expected). Full run next.
-- **64 tokens instead of 66** (`claude/64-tokens`, design below, changed): the model
-  flips Black-to-move positions to White to move inside `forward()` and negates its
-  output, castling rights become rook tokens 14 / 15, so no turn or castling token, no
-  data change, and the colour-swap augmentation is a no-op (off).
-- **Position-dependent bias / smolgen** (`claude/smolgen`): design under discussion.
+- **Smolgen** (done, the new default `t2-sg-wsd-lichessgames-8.87m`): val 88.2 vs 94.75 cp,
+  +96 Elo at depth 2, +67 at 0.5 s/move, though ~36% slower at search batch sizes with the eager
+  evaluator and 23% slower to train. Re-measure its search speed and equal-time result with the
+  CUDA-graph evaluator; try it in T3.
+- **8 heads instead of 16** (done, `t2-h8-wsd-lichessgames-6.69m`): val 95.0 cp, +27 Elo (−10
+  to +65) at depth 2: a tie; 10% faster training, the same search speed. Worth it only to save
+  training time.
+- **64 tokens instead of 66** (`claude/64-tokens`, full run in progress): the model flips
+  Black-to-move positions inside `forward()`, castling rights become rook tokens 14 / 15, no
+  augmentation. No speed gain on the 4090 at search batch sizes, nor in training; left to test:
+  whether seeing positions from the side to move evaluates better.
 
 ## Deferred
 
 - **Learning rate for T3 (width 384):** with the new recipe, try lr 8e-4 (1.2e-3 x
   256 / 384) against 1.2e-3; see "Learning rate for bigger models" below. Waits until the
-  ablations above show which changes a bigger model should include.
+  ablations show which changes a bigger model should include (smolgen yes; 8 heads optional).
 
 ## Spatial attention bias: next variants
 
