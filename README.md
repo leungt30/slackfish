@@ -582,6 +582,8 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 | New search vs old one ply deeper (d2 vs d3) | 5 / 16 (2 / 6 / 8). One more full ply still wins, but the old search used 4× the time per move. |
 | **New search vs old, equal time (d3 vs d3, 1.30 vs 1.27 s per move)** | **11 / 16 (8 / 6 / 2), about +135 Elo** |
 | **float16 weights instead of autocast** | 1.3–1.45× faster (3,064 → 3,831 positions/s at batch 20, 3,628 → 5,254 at 256) and closer to float32 (0.11 cp mean error vs 0.17). Autocast turns off `nn.TransformerEncoder`'s fused inference path; float16 weights don't. bfloat16 weights were as fast but 10× less accurate (1.06 cp); `torch.compile` and CUDA graphs added nothing on top. |
+| **Where a search's time goes** (depth 4/5 on 25 positions, RTX 2080 Ti, t2-sb-wsd-lichessgames) | Model calls 70–71%, FEN encoding 13%, the search itself 16–17%. Depth 4 made 6,683 calls for 101,685 positions: median batch 5. A call took ~2.9 ms at any batch size up to 32 (21k positions/s at batch 512, ~4.8k in the search): launching each kernel from Python, not the GPU, set the time. |
+| **CUDA graphs + encoding from bitboards** | The V3 model recorded as one CUDA graph per batch size (8–512, padded) and replayed: 2.79 → 1.16 ms a call at batch 8. Tokens read from the board's bitboards instead of building and parsing a FEN: 41.9 → 3.4 µs a position, identical on 23,575 positions. Together: depth 4 1.18 → 0.69 s a move, depth 5 3.59 → 2.10 (1.7×), the same move in 25/25 positions at both. Scores move by ≤ 0.8 cp (fp16 kernels differ with batch shape; eager batches already differed by 0.3). Recording takes 0.5 s at load. (On the laptop, with `nn.TransformerEncoder`'s fused path, CUDA graphs had added nothing, see above.) |
 | **Profiling again** (float16, depth 3) | 94–96% of a search is the network, and 512-position batches take 16× as long as 32-position ones: the GPU is saturated even by the search's small batches. So searching in a faster language would save ~5%, and two parallel searches each run at half speed. |
 | **Iteration cost** (a timed search deepening to depth 5–6) | Uneven between odd and even depths: depth 3 → 4 cost 15–18× in middlegames, 2 → 3 only 1–2.5×. A time manager that assumed "like the last step" started depth 4 with ~7 s of a 9 s budget left and threw it away unfinished; predicting each step from the same step two depths back (with per-depth minimums) cut middlegame moves from 8.7 s to ~1 s at the same depth. |
 | **PVS, null move, LMR, killer/history ordering, check extensions** (`Bot._search`) | Depth 4 on four positions: 73.4 s → 15.6 s (171k → 33k evals), identical moves. With null move and LMR from depth 3 instead of 2 it was only 33.2 s, and no better than the old search under a time limit. |
@@ -637,7 +639,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── prepare_data.py      # CSVs (+ Lichess evals and games) -> .npz or a packed folder
 │   ├── train.py             # Training loop (one GPU, or several under torchrun)
 │   ├── export.py            # Checkpoint -> model.safetensors + config.json
-│   └── evaluator.py         # Load a model for play
+│   └── evaluator.py         # Load a model for play (CUDA graphs on GPU)
 ├── Models/
 │   ├── Scalers/             # scaler_X.pkl, scaler_Y.pkl (v1/v2), scaler_Y_9M.pkl (v5)
 │   ├── Training/            # Model definitions and training scripts
