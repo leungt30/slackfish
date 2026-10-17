@@ -1,11 +1,51 @@
 # TODO
 
+**Current baseline for every experiment:** t2-sb-wsd-lichessgames-6.97m (the default bot):
+the t2-sb architecture on the Lichess evaluation database + September 2026 games (828M
+positions), 4 GPUs, batch 2048, lr 1.2e-3, WSD to 1%, 4.2 h; val MAE 95.0 (lichess) /
+94.6 cp (games). Ablations use its exact recipe (same data, seed and so the same validation
+split), then a 256-game depth-2 match against it, plus an equal-time match when the change
+affects speed. A ~3 minute run of each goes first, to check the whole pipeline.
+
+## High priority: predict the next move as a secondary objective
+
+Add a policy head that predicts the move to play, trained alongside the evaluation (a
+weighted sum of the two losses), as Leela Chess Zero's networks do. Expected to help the
+evaluation itself (move prediction forces the network to work out what each piece can
+do) and to give the search a move ordering, or a way to look at fewer moves.
+
+- Targets are in data we already have, but not in the prepared files: the Lichess
+  evaluation database has Stockfish's best move (the first move of the best line) for
+  every position, and the games have the move that was played (plus the next position's
+  eval). `NoFeat.prepare_data` needs to store a move per position (a from-to index fits
+  in 2 bytes, ~1.7 GB for 828M positions) and the data re-encoded (~1 h).
+- Decide the move encoding (64 x 64 from-to plus underpromotions, or Lc0's 1858 moves)
+  and how to mirror moves in the colour-swap augmentation.
+- Test as an ablation of the default: same recipe with the policy loss, compare val MAE,
+  move accuracy, and a 256-game match.
+
+## In progress (worktrees, as ablations of the default)
+
+- **8 attention heads instead of 16** (`claude/8-heads`): 20M-position test 189.9 vs
+  188.7 cp, 14% faster training (not the 18% expected). Full run next.
+- **64 tokens instead of 66** (`claude/64-tokens`, design below, changed): the model
+  flips Black-to-move positions to White to move inside `forward()` and negates its
+  output, castling rights become rook tokens 14 / 15, so no turn or castling token, no
+  data change, and the colour-swap augmentation is a no-op (off).
+- **Position-dependent bias / smolgen** (`claude/smolgen`): design under discussion.
+
+## Deferred
+
+- **Learning rate for T3 (width 384):** with the new recipe, try lr 8e-4 (1.2e-3 x
+  256 / 384) against 1.2e-3; see "Learning rate for bigger models" below. Waits until the
+  ablations above show which changes a bigger model should include.
+
 ## Spatial attention bias: next variants
 
 **Done:** static per-head 66 x 66 bias (`--spatial-bias`, `MultiHeadSelfAttention` in
 `NoFeat/model.py`), trained as T2-SB-W-Lichess-6.97M: full validation 104 vs 106 cp,
 13-18 cp ahead through ~300K steps, then the plain model mostly caught up; 68/128
-(+22 Elo) against T2-W-Lichess. Now the default bot. Kernel cost ~5% (memory-efficient
+(+22 Elo) against T2-W-Lichess. Was the default until t2-sb-wsd-lichessgames. Kernel cost ~5% (memory-efficient
 attention still runs with a float `attn_mask`). Results in the README Experiments section.
 
 **Next, position-dependent bias (like Lc0's "smolgen"):** generate each head's bias from
