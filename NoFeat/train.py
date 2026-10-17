@@ -113,6 +113,8 @@ def parse_args():
     p.add_argument("--dropout", type=float)
     p.add_argument("--spatial-bias", action="store_true",
                    help="v3 only: learned per-head 66x66 attention bias in every layer")
+    p.add_argument("--smolgen", action="store_true",
+                   help="v3 + --spatial-bias only: add a position-dependent bias (Lc0's smolgen) to it")
     p.add_argument("--augment-prob", type=float, default=0.5,
                    help="chance each training position is colour-swapped (0 = off)")
     p.add_argument("--no-compile", dest="compile", action="store_false",
@@ -319,6 +321,10 @@ def main():
         if args.arch != "v3":
             raise SystemExit("--spatial-bias needs --arch v3")
         overrides["spatial_bias"] = True
+    if args.smolgen:
+        if not args.spatial_bias:
+            raise SystemExit("--smolgen needs --arch v3 --spatial-bias")
+        overrides["smolgen"] = True
     model = MODELS[args.arch](**overrides).to(device)
     log(f"{type(model).__name__} {model.config}: {sum(p.numel() for p in model.parameters()):,} parameters")
     if world > 1:
