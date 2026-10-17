@@ -477,9 +477,16 @@ At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It 
 
 ### Benchmark: DeepMind's searchless transformer
 
-`Engine/match.py BOT deepmind:270M` plays against the 270M-parameter action-value transformer from [Ruoss et al. 2024](https://arxiv.org/abs/2402.04494) ([google-deepmind/searchless_chess](https://github.com/google-deepmind/searchless_chess), Apache 2.0): trained on 15 billion Stockfish 16 move evaluations, it scores every legal move in one forward pass and plays the best, with no search (the paper: Lichess blitz 2895 against humans). It's an outside yardstick, not one of our bots: `Engine/deepmind_uci.py` runs it as a UCI engine in its own JAX environment, which `scripts/setup-deepmind.sh` sets up once in `external/searchless_chess` (gitignored; 2.0 GB checkpoint, ~5 GB venv; `9M` and `136M` too). On the RTX 2080 Ti it takes ~0.25 s a move and ~0.6 GB of GPU memory.
+`Engine/match.py BOT deepmind:270M` plays against the 270M-parameter action-value transformer from [Ruoss et al. 2024](https://arxiv.org/abs/2402.04494) ([google-deepmind/searchless_chess](https://github.com/google-deepmind/searchless_chess), Apache 2.0): trained on 15 billion Stockfish 16 move evaluations, it scores every legal move in one forward pass and plays the best, with no search (the paper: Lichess blitz 2895 against humans). It's an outside yardstick, not one of our bots: `Engine/deepmind_uci.py` runs it as a UCI engine in its own JAX environment, which `scripts/setup-deepmind.sh` sets up once in `external/searchless_chess` (gitignored; 2.0 GB checkpoint, ~5 GB venv; `9M` and `136M` too). On the RTX 2080 Ti it takes ~0.25 s a move and ~1.2 GB of GPU memory per process (the wrapper uses JAX's `platform` allocator; JAX's default memory pool grew to ~4.3 GB, and three at once ran out).
 
 A first 4-game check (2 openings, depth 3): t2-sb-wsd-lichessgames-6.97m scored 0.5/4 (one draw, three losses). That's a smoke test, not a result.
+
+**Puzzles.** `Engine/puzzles.py ENGINE` scores a bot (`--depth` / `--movetime`) or `deepmind:MODEL` on the paper's 10,000 Lichess puzzles (`external/searchless_chess/data/puzzles.csv`, downloaded by the setup script), the same way as DeepMind's `src/puzzles.py`: the engine must find every solution move (any mate counts), and the result is broken down by puzzle rating. Paper: 9M 88.9%, 136M 94.5%, 270M 95.4%, Stockfish 16 at 1.5 s 100%. Our bot does about 4 puzzles/s at depth 3 with 6 workers; the 270M about 2/s with 4 workers.
+
+| First 200 puzzles | <1000 | 1000–1499 | 1500–1999 | 2000–2499 | All |
+|---|---|---|---|---|---|
+| t2-sb-wsd-lichessgames-6.97m, depth 3 | 97.9% | 100% | 94.4% | 74.4% | 92.5% |
+| DeepMind 270M (no search) | 100% | 98.3% | 98.1% | 84.6% | 96.0% |
 ### Lichess bot results
 
 [slackfish-bot](https://lichess.org/@/slackfish-bot) (t2-w-lichess-6.41m, opening book, timed search with pondering) played rated games against other Lichess bots in October 2026. "Original" is the alpha-beta search before PVS / null move / LMR, "pruned" after.
@@ -604,6 +611,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
 │   ├── match.py             # Strength tests: bot vs bot, vs Stockfish levels, or vs DeepMind's model
 │   ├── deepmind_uci.py      # DeepMind's searchless transformer as a UCI benchmark opponent
+│   ├── puzzles.py           # Puzzle accuracy on the DeepMind paper's 10,000 Lichess puzzles
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
 │   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
 │   ├── ponderstats.py       # Ponder hit rate by reply rank, from the Lichess bot's logs
