@@ -96,6 +96,11 @@ from the HF commit messages/config.json now, or wait for the training code to be
   like the search's queen-first rule.
 - **Per-opponent cap.** `--challenge A,B,C --games 15` cycles in order, so a skipped turn
   shifts the cycle and one opponent gets 6 games, another 4. Add `--games-each N`.
+- **No-increment bullet flags.** Between series the bot accepts any challenge; bot xPOI sent
+  rated 1+0 games and one was lost on time (lichess.org/codrtQxj: down to 4 s by move 64,
+  flagged at move 79). The 1/12-of-clock budget assumes an increment, and ~0.2 s/move of
+  Lichess lag isn't budgeted. Options: decline bullet with 0 increment, or budget for lag
+  and remaining moves when increment is 0, or run --casual-only between series.
 - **Connection retries.** About 12 "POST ... failed (ConnectionError), retrying" in ~60 games
   on the desktop; all recovered within seconds. Watch for it costing time in bullet.
 
