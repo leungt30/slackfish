@@ -10,7 +10,7 @@ win probability after each move) and plays the best one, with no search. Moves t
 allow a threefold repetition count as 0.5, as in DeepMind's ActionValueEngine.
 
     external/searchless_chess/.venv/bin/python Engine/deepmind_uci.py --model 270M
-    uv run python Engine/match.py t2-sb-wsd-lichessgames-6.97m deepmind:270M --movetime 1
+    uv run python Engine/match.py t2-sg-wsd-lichessgames-8.87m deepmind:270M --movetime 1
 
 --model is 9M, 136M or 270M (the action-value models; the paper puts the 270M at a
 Lichess blitz Elo of 2895 against humans).
@@ -23,13 +23,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DIR = os.path.join(os.path.dirname(HERE), "external", "searchless_chess")
 MODELS = {"9M": (8, 256), "136M": (8, 1024), "270M": (16, 1024)}   # layers, width; 8 heads each
 STEP = 6_400_000   # the released checkpoints
-BATCH = 64         # legal moves per forward pass (padded); a position has at most 218
+BATCH_SIZES = (8, 16, 32, 48, 64)   # legal moves are padded to the next size (one compile each)
 
 
-def build(model, root):
-    """An ActionValueEngine like DeepMind's _build_neural_engine, batched over legal moves."""
+def build(model, root, precision="fp32"):
+    """An ActionValueEngine like DeepMind's _build_neural_engine, batched over legal moves.
+    precision fp16 casts the weights to half precision (much faster on GPUs with fp16
+    tensor cores, such as the RTX 20 series)."""
     sys.path.insert(0, os.path.dirname(root))   # imports as searchless_chess.src...
-    from jax import random as jrandom
+    import jax
+    from jax import numpy as jnp, random as jrandom
     import numpy as np
     from searchless_chess.src import tokenizer, training_utils, transformer, utils
     from searchless_chess.src.engines import neural_engines
@@ -46,10 +49,43 @@ def build(model, root):
         checkpoint_dir=os.path.join(root, "checkpoints", model),
         params=predictor.initial_params(rng=jrandom.PRNGKey(1), targets=np.ones((1, 1), dtype=np.uint32)),
         step=STEP)
+    import haiku as hk
+    import jmp
+    run = lambda params, targets: predictor.predict(params=params, targets=targets, rng=None)
+    predict32 = jax.jit(run)
+    predict16 = jax.jit(lambda params, targets: run(params, targets))   # its own trace cache
+
+    def forward(batch):
+        if precision == "fp32":
+            return np.asarray(predict32(params, batch))
+        # Mixed precision: the linear layers (most of the compute) multiply in fp16, with their
+        # outputs, the residual stream, layer norms and attention in fp32. A few moves still
+        # overflow to NaN in fp16 (~1 in 200 positions has one); those rows are redone in fp32.
+        with hk.mixed_precision.push_policy(hk.Linear, jmp.get_policy("params=float32,compute=float16,output=float32")):
+            out = np.array(predict16(params, batch))
+        bad = np.isnan(out).any(axis=(1, 2))
+        if bad.any():
+            out[bad] = np.asarray(predict32(params, batch))[bad]
+        return out
+
+    for size in BATCH_SIZES:   # compile every batch size (both precisions) before the clock starts
+        dummy = np.zeros((size, tokenizer.SEQUENCE_LENGTH + 2), dtype=np.int32)
+        predict32(params, dummy)
+        if precision == "fp16":
+            forward(dummy)
+
+    def predict_fn(sequences):
+        """Like DeepMind's wrap_predict_fn, but padding each batch to the next of BATCH_SIZES
+        instead of always 64 (positions average ~25-35 legal moves)."""
+        outputs = []
+        for i in range(0, len(sequences), BATCH_SIZES[-1]):
+            chunk = sequences[i:i + BATCH_SIZES[-1]]
+            size = next(b for b in BATCH_SIZES if b >= len(chunk))
+            outputs.append(forward(np.pad(chunk, ((0, size - len(chunk)), (0, 0))))[:len(chunk)])
+        return np.concatenate(outputs)
+
     _, values = utils.get_uniform_buckets_edges_values(buckets)
-    return neural_engines.ActionValueEngine(
-        return_buckets_values=values,
-        predict_fn=neural_engines.wrap_predict_fn(predictor=predictor, params=params, batch_size=BATCH))
+    return neural_engines.ActionValueEngine(return_buckets_values=values, predict_fn=predict_fn)
 
 
 def main():
@@ -57,8 +93,14 @@ def main():
     p.add_argument("--model", choices=MODELS, default="270M")
     p.add_argument("--dir", default=os.environ.get("SEARCHLESS_CHESS", DEFAULT_DIR),
                    help="the searchless_chess clone with checkpoints/ (default external/searchless_chess, or $SEARCHLESS_CHESS)")
+    p.add_argument("--precision", choices=("fp32", "fp16"), default="fp16",
+                   help="fp16: linear layers in half precision, NaN rows redone in fp32; the same moves as "
+                        "fp32 on 400 test positions, 2.4x faster on the RTX 2080 Ti (default fp16)")
     args = p.parse_args()
-    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")   # share the GPU with our bots
+    # Share the GPU with our bots and other workers: allocate only what's needed, ~1.2 GB for
+    # the 270M at the same speed (JAX's default pool grew to ~4.3 GB, and three at once failed)
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
     import chess
 
     engine, board = None, chess.Board()
@@ -70,8 +112,8 @@ def main():
             print(f"id name DeepMind searchless {args.model}\nid author Ruoss et al. (Google DeepMind)\nuciok")
         elif cmd[0] == "isready":
             if engine is None:
-                engine = build(args.model, os.path.abspath(args.dir))
-                engine.play(chess.Board())   # compile once, before the clock starts
+                engine = build(args.model, os.path.abspath(args.dir), args.precision)
+                engine.play(chess.Board())
             print("readyok")
         elif cmd[0] == "ucinewgame":
             board = chess.Board()
