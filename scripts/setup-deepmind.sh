@@ -8,7 +8,7 @@
 # Clones github.com/google-deepmind/searchless_chess (Apache 2.0) into
 # external/searchless_chess (gitignored; SEARCHLESS_CHESS overrides), gives it its own
 # Python 3.10 venv with JAX (CUDA 12) and Haiku, and downloads the checkpoints from
-# DeepMind's bucket. Our own .venv is untouched. Re-running skips what's already there.
+# DeepMind's bucket, plus the paper's puzzles (Engine/puzzles.py). Our own .venv is untouched. Re-running skips what's already there.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DIR=${SEARCHLESS_CHESS:-external/searchless_chess}
@@ -39,3 +39,8 @@ for m in "${MODELS[@]}"; do
     fi
     echo "deepmind:$m ready"
 done
+
+# The paper's 10,000 Lichess puzzles (CC0), for Engine/puzzles.py
+mkdir -p "$DIR/data"
+[ -f "$DIR/data/puzzles.csv" ] || curl -fsSL -o "$DIR/data/puzzles.csv" "https://storage.googleapis.com/searchless_chess/data/puzzles.csv"
+echo "puzzles ready"
