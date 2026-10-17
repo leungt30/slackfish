@@ -19,11 +19,12 @@ root (gitignored). Then run `upgrade` once.
 
 Games: standard chess with a clock only, at most --max-games at a time (default
 1, since searches share the GPU); other challenges are declined with a reason
-Lichess shows the challenger. The bot manages its Lichess clock like the GUI's
+Lichess shows the challenger, as are clocks without increment (1+0, 5+0), where the
+bot can flag (--allow-no-increment accepts them). The bot manages its Lichess clock like the GUI's
 bot clock (see Bot in bots.py), but more freely: about 1/12 of its time plus the
 increment per move, 1/20 under 3 minutes (--moves-left), searching by time with
 no depth limit. On the opponent's
-time it ponders their 5 likeliest replies, and if one is played after it was
+time it ponders their 3 likeliest replies, and if one is played after it was
 searched to the bot's depth (the :DEPTH in --bot), it moves instantly. With 7 pieces or
 fewer it plays the perfect move from Lichess's endgame tablebase instead of
 searching (unless --no-tablebase or the lookup fails). It accepts a draw offer
@@ -411,6 +412,8 @@ class BotRunner:
             return "toofast"
         if tc["limit"] > a.max_base:
             return "tooslow"
+        if tc["increment"] == 0 and not a.allow_no_increment:
+            return "timecontrol"   # the budget assumes an increment; with ~0.2 s/move of lag it flags
         if c["rated"] and a.casual_only:
             return "casual"
         if a.no_bots and c["challenger"].get("title") == "BOT":
@@ -582,6 +585,8 @@ def main():
     p.add_argument("--min-base", type=float, default=30,
                    help="decline games estimated under this many seconds a side, base + 40 x increment (default 30)")
     p.add_argument("--max-base", type=float, default=1800, help="decline clocks over this many seconds (default 1800)")
+    p.add_argument("--allow-no-increment", action="store_true",
+                   help="accept clocks without increment (e.g. 1+0, 5+0), declined by default since the bot can flag")
     p.add_argument("--casual-only", action="store_true", help="decline rated challenges")
     p.add_argument("--no-bots", action="store_true", help="decline challenges from other bots")
     p.add_argument("--no-ponder", action="store_true", help="don't think on the opponent's time")
