@@ -76,3 +76,34 @@ def unpack_squares(packed):
         return np.stack((low, high), axis=-1).reshape(len(packed), 64)
     import torch
     return torch.stack((low, high), dim=-1).reshape(packed.shape[0], 64)
+
+
+_TOKENS = np.arange(1, 13, dtype=np.uint8)[None, :, None]   # white P..K = 1-6, black p..k = 7-12
+
+
+def encode_boards(boards):
+    """encode_fens for chess.Board objects, read from their bitboards instead of building
+    and parsing a FEN (~4x faster; what the engine's evaluator uses). Same tokens:
+    en passant only when a legal capture exists (as Board.fen() writes it), castling
+    rights as FEN reports them (Board.clean_castling_rights)."""
+    n = len(boards)
+    masks = np.empty((n, 12), dtype=np.uint64)
+    castling = np.empty(n, dtype=np.uint8)
+    turn = np.empty(n, dtype=np.uint8)
+    ep = []
+    for i, b in enumerate(boards):
+        white, black = b.occupied_co[True], b.occupied_co[False]
+        pieces = (b.pawns, b.knights, b.bishops, b.rooks, b.queens, b.kings)
+        masks[i] = [p & white for p in pieces] + [p & black for p in pieces]
+        rights = b.clean_castling_rights()
+        castling[i] = ((rights >> 7 & 1) | (rights & 1) << 1          # H1 (K), A1 (Q)
+                       | (rights >> 63 & 1) << 2 | (rights >> 56 & 1) << 3)   # H8 (k), A8 (q)
+        turn[i] = not b.turn
+        if b.ep_square is not None and b.has_legal_en_passant():
+            ep.append((i, b.ep_square))
+    # bit k of a mask is square k: little-endian bytes, least significant bit first
+    bits = np.unpackbits(masks.astype("<u8").view(np.uint8).reshape(n, 12, 8), axis=2, bitorder="little")
+    squares = (bits * _TOKENS).sum(axis=1, dtype=np.uint8)
+    for i, sq in ep:
+        squares[i, sq] = EP_TOKEN
+    return squares, castling, turn
