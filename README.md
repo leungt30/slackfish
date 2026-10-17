@@ -137,7 +137,7 @@ A much stronger book is [Cerebellum Light](https://zipproth.de/Brainfish/downloa
 
 ### On Lichess
 
-[slackfish-bot](https://lichess.org/@/slackfish-bot) plays on Lichess as a BOT account through `Engine/lichess.py`. Anyone can challenge it ([challenge link](https://lichess.org/?user=slackfish-bot#friend)) to standard chess with a 30 s to 30 min clock; it plays one game at a time and declines the rest with a reason. `scripts/lichess-bot.sh` runs it in the background:
+[slackfish-bot](https://lichess.org/@/slackfish-bot) plays on Lichess as a BOT account through `Engine/lichess.py`. Anyone can challenge it ([challenge link](https://lichess.org/?user=slackfish-bot#friend)) to standard chess with a 30 s to 30 min clock and an increment (it declines 1+0, 5+0 and other no-increment clocks); it plays one game at a time and declines the rest with a reason. `scripts/lichess-bot.sh` runs it in the background:
 
 ```bash
 scripts/lichess-bot.sh start                     # online, accepting challenges
@@ -152,7 +152,7 @@ scripts/lichess-bot.sh stop                      # once the current game ends (-
 
 The blitz and bullet presets challenge online bots rated 1850-2100 at that speed (`--opponent-rating` to change), picked when the series starts; presets, `challenge` and `restart` stop a running bot between games first. Each searched move's log line records whether the opponent played a reply pondered on its time and which one (`ponder hit #2/3 at d4`); `uv run python Engine/ponderstats.py` sums that up by rank and setting. It ponders 3 replies (`--ponder-replies`; see [the experiment](#lichess-bot-time-management-and-pondering-t2-sb-w-lichess-697m-rtx-2080-ti)).
 
-On its clock it spends about 1/12 of its remaining time plus the increment per move (1/20 for clocks under 3 minutes, whoever started the game; `--moves-left N` overrides it), searching as deep as that allows, and ponders the opponent's 5 likeliest replies on their time. A pondered reply that reached the `:DEPTH` of `--bot` (5 in the script, 4 in its bullet preset) is played instantly. The header of `scripts/lichess-bot.sh` explains every setting and how to adjust it, written so another assistant can operate the bot. With 7 pieces or fewer it plays the perfect move from [Lichess's endgame tablebase](https://tablebase.lichess.ovh) instead of searching, so won endings get converted (the search alone once shuffled checks with king and queen until a threefold repetition). It accepts a draw offer only when its own evaluation is under +0.10, and resumes a game in progress after a restart or a dropped connection. `--stockfish 1,2,3` challenges Lichess's own Stockfish levels instead (always casual). Setup (a new account, its token in `.lichess_token`, and `lichess.py upgrade`) is in the docstring of `Engine/lichess.py`.
+On its clock it spends about 1/12 of its remaining time plus the increment per move (1/20 for clocks under 3 minutes, whoever started the game; `--moves-left N` overrides it), searching as deep as that allows, and ponders the opponent's 3 likeliest replies on their time. A pondered reply that reached the `:DEPTH` of `--bot` (5 in the script, 4 in its bullet preset) is played instantly. The header of `scripts/lichess-bot.sh` explains every setting and how to adjust it, written so another assistant can operate the bot. With 7 pieces or fewer it plays the perfect move from [Lichess's endgame tablebase](https://tablebase.lichess.ovh) instead of searching, so won endings get converted (the search alone once shuffled checks with king and queen until a threefold repetition). It declines clocks without increment (1+0, 5+0), since it lost a 1+0 game on time to lag, unless `--allow-no-increment`. It accepts a draw offer only when its own evaluation is under +0.10, and resumes a game in progress after a restart or a dropped connection. `--stockfish 1,2,3` challenges Lichess's own Stockfish levels instead (always casual). Setup (a new account, its token in `.lichess_token`, and `lichess.py upgrade`) is in the docstring of `Engine/lichess.py`.
 
 `Engine/clockreport.py` shows how both sides used their clocks in its games: each player's normal time per move early on against its last moves, and whether a slowdown was forced by the clock ("clock-limited": it kept spending the same share of a shrinking clock, or started rushing with under a quarter of its time left), was instant pondered replies, or was by choice. It sums this up per opponent, with the bot's score when the opponent was clock-limited. `--plot DIR` saves a chart of both clocks and the seconds per move for each game.
 
@@ -474,6 +474,12 @@ T2-W-Lichess at depth 3 against each level:
 
 At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It still scored 44% against the strongest level tested, so the top of its range isn't pinned down. Depth 3 adds roughly 300 Elo, though part of that gap is Stockfish getting 1 s instead of 0.5 s. A depth-3 move takes a median 0.73 s (1.7 s at most) on the desktop.
 
+
+### Benchmark: DeepMind's searchless transformer
+
+`Engine/match.py BOT deepmind:270M` plays against the 270M-parameter action-value transformer from [Ruoss et al. 2024](https://arxiv.org/abs/2402.04494) ([google-deepmind/searchless_chess](https://github.com/google-deepmind/searchless_chess), Apache 2.0): trained on 15 billion Stockfish 16 move evaluations, it scores every legal move in one forward pass and plays the best, with no search (the paper: Lichess blitz 2895 against humans). It's an outside yardstick, not one of our bots: `Engine/deepmind_uci.py` runs it as a UCI engine in its own JAX environment, which `scripts/setup-deepmind.sh` sets up once in `external/searchless_chess` (gitignored; 2.0 GB checkpoint, ~5 GB venv; `9M` and `136M` too). On the RTX 2080 Ti it takes ~0.25 s a move and ~0.6 GB of GPU memory.
+
+A first 4-game check (2 openings, depth 3): t2-sb-wsd-lichessgames-6.97m scored 0.5/4 (one draw, three losses). That's a smoke test, not a result.
 ### Lichess bot results
 
 [slackfish-bot](https://lichess.org/@/slackfish-bot) (t2-w-lichess-6.41m, opening book, timed search with pondering) played rated games against other Lichess bots in October 2026. "Original" is the alpha-beta search before PVS / null move / LMR, "pruned" after.
@@ -492,6 +498,8 @@ Ratings after 83 games: blitz 2044, bullet 2066 (bot-pool ratings, not comparabl
 - **Clock use.** Lichess charged ~0.2 s per move beyond the bot's own thinking. With 1/25 of the clock per move it finished 3+2 games with 160–265 s left while opponents ran low (it couldn't use the time: depth 4 didn't fit, depth 3 took ~1 s); `Engine/lichess.py` now spends 1/12 (1/20 under 3 minutes), and in bullet it still finishes with 28–68 s against the opponents' 4–47.
 - **Opening books.** Of 10 common amateur mistakes (Damiano 2...f6, the wayward queen, Englund gambit, Blackburne Shilling...), gm2001 has the punishing reply for 1 and Cerebellum Light for 7; the other 3 (Scholar's mate, Legal's trap, the elephant trap) are short tactics the search finds anyway.
 - **Practicalities.** Lichess limits each bot to 100 games a day against other bots, and many bots decline bot challenges, so a challenge list needs 15–20 names to keep a series going.
+
+**With t2-sb-wsd-lichessgames-6.97m** (from 2026-10-15; depth 5 blitz / 4 bullet, 3 pondered replies, the RTX 2080 Ti desktop), over about 170 rated games against bots mostly rated 1850–2400: **blitz 2170 → 2302, bullet 2111 → 2301**, the bot's best ratings so far (2302 / 2296 on 2026-10-16, after 134 blitz and 165 bullet games in all). The one recent loss on time came from a rated 1+0 game another bot sent between series: the time budget assumes an increment, and ~0.2 s/move of lag isn't budgeted, so clocks without increment are now declined (`--allow-no-increment` to accept them).
 
 ### Lichess bot: time management and pondering (t2-sb-w-lichess-6.97m, RTX 2080 Ti)
 
@@ -594,7 +602,8 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── bots.py              # Model registry, feature encoding, evaluator, minimax search
 │   ├── play.py              # Game runner + CLI (bot/human vs bot/human)
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
-│   ├── match.py             # Strength tests: bot vs bot, or vs Stockfish levels for an Elo estimate
+│   ├── match.py             # Strength tests: bot vs bot, vs Stockfish levels, or vs DeepMind's model
+│   ├── deepmind_uci.py      # DeepMind's searchless transformer as a UCI benchmark opponent
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
 │   ├── clockreport.py       # Lichess games: did either side start thinking less, and was its clock why
 │   ├── ponderstats.py       # Ponder hit rate by reply rank, from the Lichess bot's logs
