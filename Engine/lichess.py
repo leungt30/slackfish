@@ -573,8 +573,8 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("upgrade", help="turn the token's account into a BOT account (permanent; no games played yet)")
     p = sub.add_parser("play", help="go online: accept challenges, optionally play the Lichess AI")
-    p.add_argument("--bot", type=parse_bot, default=("t2-sb-w-lichess-6.97m", 3),
-                   help="NAME[:DEPTH]; DEPTH is when a pondered reply is played at once (default t2-sb-w-lichess-6.97m:3)")
+    p.add_argument("--bot", type=parse_bot, default=("t2-sb-wsd-lichessgames-6.97m", 3),
+                   help="NAME[:DEPTH]; DEPTH is when a pondered reply is played at once (default t2-sb-wsd-lichessgames-6.97m:3)")
     p.add_argument("--book", nargs="?", const="gm2001.bin", help="opening book in Models/Books (default with no name: gm2001.bin)")
     p.add_argument("--book-plies", type=int, default=16,
                    help="leave the book after this many plies at most (default 16; deep engine books like Cerebellum go 30+)")
