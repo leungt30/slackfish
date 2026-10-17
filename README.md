@@ -484,9 +484,10 @@ At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It 
 | Our depth | Games | Score | W / D / L | Elo difference (95%) |
 |---|---|---|---|---|
 | 1 | 32 | 1.5 / 32 (5%) | 0 / 3 / 29 | about −520 |
+| 3 | 128 | 39.5 / 128 (31%) | 14 / 51 / 63 | −140 (−191 to −95) |
 | 6 | 77 (6 h) | **61.5 / 77 (80%)** | **48 / 27 / 2** | **+239 (+179 to +314)** |
 
-With one evaluation per move, the 270M (40× our parameters, trained on 15 billion move evaluations) is far stronger: our evaluation alone is no match for it. With search to depth 6, the bot wins 80% and lost only 2 of 77, so search is worth several hundred Elo over the evaluator here. The paper rates the 270M at 2299 against Lichess bots, about where slackfish-bot (depth 4–5) sits; depth 6 is too slow for Lichess clocks on this GPU (~6 s a move).
+At depth 3 (~0.3 s a move against its ~0.06 s) it is still clearly ahead, though 40% of the games were drawn. With one evaluation per move, the 270M (40× our parameters, trained on 15 billion move evaluations) is far stronger: our evaluation alone is no match for it. With search to depth 6, the bot wins 80% and lost only 2 of 77, so search is worth several hundred Elo over the evaluator here. The paper rates the 270M at 2299 against Lichess bots, about where slackfish-bot (depth 4–5) sits; depth 6 is too slow for Lichess clocks on this GPU (~6 s a move).
 
 **Speed.** DeepMind's model is GPU-bound: four processes together managed 3.7 moves/s, no more than one alone (3.9), so use `--workers 2` at most (2 was 10% faster than 1 at depth 1). The wrapper pads each batch of legal moves to 8/16/32/48/64 instead of always 64 (1.8×), and by default runs the linear layers in fp16 with Haiku's mixed precision (`jmp`), redoing in fp32 any move whose prediction overflows to NaN (about 1 position in 30 has one; `np.argmax` would otherwise pick it): 16.7 moves/s, the same moves as fp32 on 400 positions, 4.2× the original. All-fp16 doesn't work: the layer norms overflow and the predictions go flat (24/200 moves matched). `deepmind:270M:fp32` runs it in full precision.
 
