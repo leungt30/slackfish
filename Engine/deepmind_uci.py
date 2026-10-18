@@ -10,7 +10,7 @@ win probability after each move) and plays the best one, with no search. Moves t
 allow a threefold repetition count as 0.5, as in DeepMind's ActionValueEngine.
 
     external/searchless_chess/.venv/bin/python Engine/deepmind_uci.py --model 270M
-    uv run python Engine/match.py t2-sg-wsd-lichessgames-8.87m deepmind:270M --movetime 1
+    uv run python Engine/match.py t3-sg64-muon-lichessgames-16.0m deepmind:270M --movetime 1
 
 --model is 9M, 136M or 270M (the action-value models; the paper puts the 270M at a
 Lichess blitz Elo of 2895 against humans).

@@ -130,7 +130,7 @@ def simulation_report(data, budgets, alternatives):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--bot", default="t2-sg-wsd-lichessgames-8.87m", help="bot to time (default: the default bot)")
+    p.add_argument("--bot", default="t3-sg64-muon-lichessgames-16.0m", help="bot to time (default: the default bot)")
     p.add_argument("--max-depth", type=int, default=6, help="deepest depth to measure (7 can take a minute per position)")
     p.add_argument("--positions", default=POSITIONS, help="FEN file, one per line (default Engine/data/timing.fen)")
     p.add_argument("--limit", type=int, help="only the first N positions")

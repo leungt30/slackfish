@@ -37,19 +37,19 @@ do) and to give the search a move ordering, or a way to look at fewer moves.
 - **Search speed with CUDA graphs** (done): smolgen −23% (from −36% eager), 8 heads +10-12%
   (from ±0), 64 tokens +20-27%. Smolgen's equal-time win rose to +90.
 
-## In progress: T3 with everything that helped
+## Done: T3 with everything that helped (the new default)
 
-`--arch v4 --d-model 384 --heads 8 --d-ff 1536 --spatial-bias --smolgen --optimizer muon`, the
-WSD recipe at lr 1.2e-3 (Muon's step scaled to AdamW's), full data, no augmentation (v4):
-15,985,153 parameters. Then depth-2 and equal-time matches against t2-sg-wsd-lichessgames-8.87m.
-Changes four things at once (width, 64 tokens, Muon, and 8 heads, which is T3's own count), so a
-win shows the combination works, not each part's share.
+`t3-sg64-muon-lichessgames-16.0m`: `--arch v4 --d-model 384 --heads 8 --d-ff 1536 --spatial-bias
+--smolgen --optimizer muon`, the WSD recipe at lr 1.2e-3, full data, no augmentation; 15,985,153
+parameters, 7.5 h. Val 83.4 cp (vs 88.2 for the smolgen default); against it, +117 Elo at depth
+2 and +111 at 0.5 s/move (searches about as fast). Changes four things at once, so each part's
+share is unknown; next candidates: next-move prediction on top of this model, and isolating Muon
+(the default's architecture with Muon alone).
 
 ## Deferred
 
-- **Learning rate for T3 (width 384):** with the new recipe, try lr 8e-4 (1.2e-3 x
-  256 / 384) against 1.2e-3; see "Learning rate for bigger models" below. Waits until the
-  ablations show which changes a bigger model should include (smolgen yes; 8 heads optional).
+- **Learning rate for T3 (width 384):** T3 with Muon at 1.2e-3 trained well (above); a lower or
+  higher rate is untested.
 
 ## Spatial attention bias: next variants
 
