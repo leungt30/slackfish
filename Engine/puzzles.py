@@ -3,7 +3,7 @@ Puzzle accuracy: our bots (or DeepMind's searchless models) on the 10,000 Liches
 from DeepMind's searchless chess paper (Ruoss et al. 2024, Table 1), scored the same way
 as their src/puzzles.py, so the numbers line up with the paper's.
 
-    uv run python Engine/puzzles.py t2-sg-wsd-lichessgames-8.87m --depth 4
+    uv run python Engine/puzzles.py t3-sg64-muon-lichessgames-16.0m --depth 4
     uv run python Engine/puzzles.py deepmind:270M --limit 1000 --workers 2
 
 A puzzle starts at the end of its game's PGN; the first move of its solution is the
