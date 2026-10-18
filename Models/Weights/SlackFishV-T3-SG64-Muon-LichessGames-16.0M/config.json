@@ -1,0 +1,32 @@
+{
+  "model_class": "ChessTransformerV4",
+  "model_config": {
+    "d_model": 384,
+    "n_layers": 8,
+    "n_heads": 8,
+    "d_ff": 1536,
+    "dropout": 0.0,
+    "spatial_bias": true,
+    "smolgen": true,
+    "smolgen_square": 8,
+    "smolgen_summary": 128,
+    "smolgen_head": 64
+  },
+  "target": "winprob",
+  "target_scale": 400,
+  "target_clip": 1500,
+  "parameters": 15985153,
+  "training": {
+    "epochs": 1,
+    "sources": [
+      "lichess",
+      "lichess_games"
+    ],
+    "augment_prob": 0.0,
+    "val_mae_cp": 83.38919067382812,
+    "val_mae_cp_by_source": {
+      "lichess": 81.77411651611328,
+      "lichess_games": 84.84827423095703
+    }
+  }
+}

@@ -29,7 +29,9 @@ Augmentation: each training position is colour-swapped (board mirrored, colours,
 castling and turn swapped, target negated) with probability --augment-prob, so
 the model sees "White is winning" and "Black is winning" equally often. The
 validation set is scored both as-is and mirrored; a large gap between the two
-MAEs means the model evaluates the two colours inconsistently.
+MAEs means the model evaluates the two colours inconsistently. --arch v4 sees every
+position from the side to move, so a colour swap doesn't change its input: augmentation
+is turned off and the mirrored MAE is the plain one (not scored twice).
 
 Precision (--precision): mixed precision on CUDA. auto uses bf16 on GPUs with
 native bf16 (Ampere and newer) and fp16 with loss scaling on older ones such as
@@ -90,6 +92,8 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=1024)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--optimizer", choices=["adamw", "muon"], default="adamw",
+                   help="muon: Muon for the 2D weight matrices inside the layers, AdamW for the rest")
     p.add_argument("--warmup-steps", type=int, default=2000)
     p.add_argument("--schedule", choices=["cosine", "wsd"], default="cosine",
                    help="after warmup: cosine decay, or wsd (warmup-stable-decay: flat, then a linear decay)")
@@ -104,7 +108,7 @@ def parse_args():
     p.add_argument("--wp-scale", type=float, default=400,
                    help="winprob target: win probability = sigmoid(cp / WP_SCALE)")
     p.add_argument("--arch", choices=list(MODELS), default="v1",
-                   help="model class from NoFeat/model.py (v1, v2, v3 = ChessTransformerV1, V2, V3)")
+                   help="model class from NoFeat/model.py (v1 ... v4 = ChessTransformerV1 ... V4)")
     # Size options default to the chosen class's own defaults
     p.add_argument("--d-model", type=int)
     p.add_argument("--layers", type=int)
@@ -112,9 +116,9 @@ def parse_args():
     p.add_argument("--d-ff", type=int)
     p.add_argument("--dropout", type=float)
     p.add_argument("--spatial-bias", action="store_true",
-                   help="v3 only: learned per-head 66x66 attention bias in every layer")
+                   help="v3 / v4 only: learned per-head attention bias (66x66 / 64x64) in every layer")
     p.add_argument("--smolgen", action="store_true",
-                   help="v3 + --spatial-bias only: add a position-dependent bias (Lc0's smolgen) to it")
+                   help="v3 / v4 + --spatial-bias only: add a position-dependent bias (Lc0's smolgen) to it")
     p.add_argument("--augment-prob", type=float, default=0.5,
                    help="chance each training position is colour-swapped (0 = off)")
     p.add_argument("--no-compile", dest="compile", action="store_false",
@@ -213,6 +217,28 @@ def in_sources(idx, source, use):
     for i in range(0, len(idx), CHUNK):
         mask[i:i + CHUNK] = use[source[idx[i:i + CHUNK]].long()]
     return mask
+
+
+def make_optimizers(model, args):
+    """[AdamW], or for --optimizer muon [Muon for the 2D weight matrices inside the layers
+    (attention and feed-forward), AdamW for the rest: embeddings, norms, biases, the
+    attention bias tables and the output head]. Muon's updates are scaled to AdamW's size
+    (match_rms_adamw), so both take the same --lr, schedule and --weight-decay."""
+    if args.optimizer == "adamw":
+        return [torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)]
+    inside = lambda name: name.startswith(("encoder.layers.", "blocks."))
+    matrices = [p for n, p in model.named_parameters() if p.ndim == 2 and inside(n)]
+    rest = [p for n, p in model.named_parameters() if not (p.ndim == 2 and inside(n))]
+    return [torch.optim.Muon(matrices, lr=args.lr, weight_decay=args.weight_decay, adjust_lr_fn="match_rms_adamw"),
+            torch.optim.AdamW(rest, lr=args.lr, weight_decay=args.weight_decay)]
+
+
+def as_list(state):
+    return state if isinstance(state, list) else [state]
+
+
+def from_list(states):
+    return states[0] if len(states) == 1 else states
 
 
 def setup_distributed():
@@ -318,19 +344,24 @@ def main():
     overrides = {k: v for k, v in dict(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads,
                                        d_ff=args.d_ff, dropout=args.dropout).items() if v is not None}
     if args.spatial_bias:
-        if args.arch != "v3":
-            raise SystemExit("--spatial-bias needs --arch v3")
+        if args.arch not in ("v3", "v4"):
+            raise SystemExit("--spatial-bias needs --arch v3 or v4")
         overrides["spatial_bias"] = True
+    symmetric = args.arch == "v4"   # model(mirror(x)) == -model(x) by construction
+    if symmetric and args.augment_prob > 0:
+        log(f"--arch v4 sees every position from the side to move, so colour swaps change "
+            f"nothing: --augment-prob {args.augment_prob} -> 0")
+        args.augment_prob = 0.0
     if args.smolgen:
-        if not args.spatial_bias:
-            raise SystemExit("--smolgen needs --arch v3 --spatial-bias")
+        if not args.spatial_bias or args.arch not in ("v3", "v4"):
+            raise SystemExit("--smolgen needs --arch v3 or v4 with --spatial-bias")
         overrides["smolgen"] = True
     model = MODELS[args.arch](**overrides).to(device)
     log(f"{type(model).__name__} {model.config}: {sum(p.numel() for p in model.parameters()):,} parameters")
     if world > 1:
         torch.manual_seed(args.seed + rank)   # different dropout per GPU; DDP copies rank 0's weights
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizers = make_optimizers(model, args)
     steps_per_epoch = len(train_idx) // args.batch_size   # drop the ragged last batch
     # model stays the bare module (checkpoints, validation); forward averages gradients across GPUs
     forward = torch.compile(model) if args.compile and device.type == "cuda" else model
@@ -348,15 +379,18 @@ def main():
             return 1.0 - (1 - floor) * min(1.0, max(0.0, progress))
         progress = (step - args.warmup_steps) / max(1, total_steps - args.warmup_steps)
         return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(1.0, progress)))
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_at)
+    schedulers = [torch.optim.lr_scheduler.LambdaLR(o, lr_at) for o in optimizers]
+    scheduler = schedulers[0]   # (they all follow the same schedule)
     scaler = torch.amp.GradScaler(device.type, enabled=args.precision == "fp16")   # fp16 needs loss scaling
 
     start_epoch, start_step, best_val, history, curve = 1, 0, float("inf"), [], []
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        for o, state in zip(optimizers, as_list(ckpt["optimizer_state_dict"]), strict=True):
+            o.load_state_dict(state)
+        for s, state in zip(schedulers, as_list(ckpt["scheduler_state_dict"]), strict=True):
+            s.load_state_dict(state)
         if ckpt.get("scaler_state_dict") and scaler.is_enabled():
             scaler.load_state_dict(ckpt["scaler_state_dict"])
         best_val = ckpt["best_val"]
@@ -379,8 +413,9 @@ def main():
             "epoch": epoch,
             "step": step,   # next step to run within `epoch`, None once the epoch is done
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
+            # one optimizer (AdamW): its state as before; Muon + AdamW: a list of both
+            "optimizer_state_dict": from_list([o.state_dict() for o in optimizers]),
+            "scheduler_state_dict": from_list([s.state_dict() for s in schedulers]),
             "scaler_state_dict": scaler.state_dict() if scaler.is_enabled() else None,
             "model_class": type(model).__name__,
             "model_config": model.config,
@@ -437,13 +472,17 @@ def main():
                 pred = forward(sq, ca, tu)
             loss = criterion(pred.float(), y)
 
-            optimizer.zero_grad(set_to_none=True)
+            for o in optimizers:
+                o.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)   # clip the real gradients, not the scaled ones
+            for o in optimizers:
+                scaler.unscale_(o)   # clip the real gradients, not the scaled ones
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)   # skipped if fp16 gradients overflowed
+            for o in optimizers:
+                scaler.step(o)   # skipped if fp16 gradients overflowed
             scaler.update()
-            scheduler.step()
+            for s in schedulers:
+                s.step()
 
             if step % 10 == 0:   # .item() syncs with the GPU, so don't do it every step
                 step_loss = loss.detach()
@@ -472,10 +511,13 @@ def main():
                 save(checkpoint(epoch, step + 1), "last.pt")
 
         sq_err, cp_err = val_metrics(*validate(val_idx), args)
-        _, mirror_cp_err = val_metrics(*validate(val_idx[val_used], mirror=True), args)
         val_mse = sq_err[val_used].mean().item()
         val_mae_cp = cp_err[val_used].mean().item()
-        mirror_mae_cp = mirror_cp_err.mean().item()
+        if symmetric:   # the mirrored predictions are exactly the negated ones
+            mirror_mae_cp = val_mae_cp
+        else:
+            _, mirror_cp_err = val_metrics(*validate(val_idx[val_used], mirror=True), args)
+            mirror_mae_cp = mirror_cp_err.mean().item()
         val_source = source[val_idx]
         by_source = {name: cp_err[val_source == i].mean().item()
                      for i, name in enumerate(source_names) if (val_source == i).any()}
