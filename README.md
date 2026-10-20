@@ -492,6 +492,8 @@ The 16-game T2-W-All vs T2-W result (−44) looked like a tie; the 128-game matc
 | T2-W-6.41M, depth 2 | 0.3 s | 1320 (8 games) | 1 / 8: very roughly 1000 |
 | T2-W-Lichess-6.41M, depth 2 | 0.5 s | 1320–2100 (24) | **1972 ± 84** |
 | T2-W-Lichess-6.41M, depth 3 | 1 s | 1700–2500 (24) | **2255 ± 80** |
+| T3-SG64-Muon-LichessGames-16.0M (default), depth 2 | 0.5 s | 2500–2900 (32 each) | **~2750** (per-level 2706 ± 142, 2744 ± 121, 2776 ± 128) |
+| T3-SG64-Muon-LichessGames-16.0M (default), depth 4 | 0.5 s | 2900–3100 (32 each) | **~2960** (per-level 2955 ± 122, 2963 ± 130) |
 
 T2-W-Lichess at depth 3 against each level:
 
@@ -502,6 +504,18 @@ T2-W-Lichess at depth 3 against each level:
 
 At depth 2 it won all 24 games against level 1320 and 23 of 24 against 1500. It still scored 44% against the strongest level tested, so the top of its range isn't pinned down. Depth 3 adds roughly 300 Elo, though part of that gap is Stockfish getting 1 s instead of 0.5 s. A depth-3 move takes a median 0.73 s (1.7 s at most) on the desktop.
 
+
+The default bot against each level (16 book openings × both colours, 32 games per level, 4 workers, quiescence and the other search defaults on, no pondering, no bot time limit). Each level was played in turn, moving up while the bot scored above 50%:
+
+| Depth | Stockfish level | Score / 32 | W / D / L |
+|---|---|---|---|
+| 2 | 2500 | 24.5 | 23 / 3 / 6 |
+| 2 | 2700 | 18 | 12 / 12 / 8 |
+| 2 | 2900 | 10.5 | 5 / 11 / 16 |
+| 4 | 2900 | 18.5 | 9 / 19 / 4 |
+| 4 | 3100 | 10 | 0 / 20 / 12 |
+
+Depth 4 adds roughly 200 Elo over depth 2. At depth 4, 39 of the 64 games were draws. Stockfish's `UCI_Elo` levels go up to 3190 and were calibrated by its developers at a much longer time control (about 2 minutes a game, from memory; not checked), so at 0.5 s the top levels are probably weaker than their labels and these ratings are upper bounds. Use them to compare our own bots under identical settings, not as absolute Elo. A depth-4 move can take longer than Stockfish's 0.5 s, so the comparison isn't at equal time.
 
 ### Benchmark: DeepMind's searchless transformer
 
