@@ -23,9 +23,10 @@ import torch.nn as nn
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DEFAULT_BOOK = os.path.join(ROOT, "Models", "Books", "gm2001.bin")
-# Hugging Face model repo holding exported NoFeat models as <folder>/model.safetensors
-# + config.json (see NoFeat/export.py). A missing model is downloaded from here on
-# first use. SLACKFISH_HF_REPO overrides it; set it to "" for local files only.
+# Hugging Face model repo holding the model weights: the CNN checkpoints at the repo
+# root, and the NoFeat models as <folder>/model.safetensors + config.json (see
+# NoFeat/export.py). A missing model is downloaded from here on first use.
+# SLACKFISH_HF_REPO overrides it; set it to "" for local files only.
 HF_REPO = os.environ.get("SLACKFISH_HF_REPO", "mathemagicianz/slackfish") or None
 for p in (ROOT, os.path.join(ROOT, "Models", "Training")):
     if p not in sys.path:
@@ -108,17 +109,31 @@ def encode_v5(board: chess.Board):
 
 @dataclass
 class BotSpec:
+    """A CNN checkpoint: a single file under Models/Weights, loaded with torch.load.
+    If the local file is missing, it is downloaded from HF_REPO on first use (the
+    checkpoints live at the repo root, not in a folder)."""
     build_model: Callable[[], nn.Module]
     encode: Callable[[chess.Board], tuple]
     weights: str             # relative to repo root
     scaler_y: str            # relative to repo root
     scaler_x: str | None = None  # None = features were not scaled in training
+    on_hf: bool = True       # whether the checkpoint is in HF_REPO (v5's was never uploaded)
 
     def make_evaluator(self, weights=None, device=None):
         return Evaluator(self, weights, device)
 
     def available(self) -> bool:
-        return os.path.exists(os.path.join(ROOT, self.weights))
+        return self.on_hf and (os.path.exists(os.path.join(ROOT, self.weights)) or HF_REPO is not None)
+
+    def download(self) -> str:
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+        path = os.path.join(ROOT, self.weights)
+        try:
+            return hf_hub_download(HF_REPO, os.path.basename(self.weights),
+                                   local_dir=os.path.dirname(path))
+        except (EntryNotFoundError, RepositoryNotFoundError):
+            raise FileNotFoundError(f"No checkpoint {os.path.basename(self.weights)} in {HF_REPO}")
 
 
 @dataclass
@@ -165,7 +180,7 @@ BOTS = {
                   "Models/Scalers/scaler_Y.pkl", "Models/Scalers/scaler_X.pkl"),
     "v5": BotSpec(lambda: SlackFishCNN_V5(24, 24), encode_v5,
                   "Models/Weights/SlackFishCNN_V5_79",
-                  "Models/Scalers/scaler_Y_9M.pkl"),
+                  "Models/Scalers/scaler_Y_9M.pkl", on_hf=False),
     "t1-3.25m": NoFeatSpec("Models/Weights/SlackFishV-T1-3.25M"),
     "t1-alpha": NoFeatSpec("Models/Weights/SlackFishV-T1-alpha"),
     "t2-6.41m": NoFeatSpec("Models/Weights/SlackFishV-T2-6.41M"),   # ChessTransformerV2
@@ -191,7 +206,15 @@ class Evaluator:
         self.scaler_x = joblib.load(os.path.join(ROOT, spec.scaler_x)) if spec.scaler_x else None
         self.scaler_y = joblib.load(os.path.join(ROOT, spec.scaler_y))
 
-        path = weights or os.path.join(ROOT, spec.weights)
+        if weights is not None:
+            path = weights
+        else:
+            path = os.path.join(ROOT, spec.weights)
+            if not os.path.exists(path) and HF_REPO is not None and spec.on_hf:
+                try:
+                    path = spec.download()
+                except FileNotFoundError:
+                    pass   # not on HF after all: keep the local path for the error below
         if not os.path.exists(path):
             raise FileNotFoundError(f"No checkpoint at {path}. Train it first or pass weights=... / --white-weights")
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
