@@ -16,8 +16,10 @@ Either way the log reports MAE in centipawns (clipped to +-CLIP) so runs compare
 Checkpoints (model, optimizer, config, losses) go to --out: last.pt after every
 epoch and every --save-every steps within one, best.pt when validation loss
 improves. --resume picks up at the exact step it stopped (each epoch's shuffle
-is seeded, so the order is reproduced). Resuming with a larger --epochs
-stretches the LR schedule to the new length.
+is seeded, so the order is reproduced), and refuses to start if a setting that
+decides the order (ORDER_ARGS: data, sources, limit, val-frac, seed, batch size)
+or the number of training positions differs from the checkpoint's. Resuming with
+a larger --epochs stretches the LR schedule to the new length.
 
 LR schedule: linear warmup over --warmup-steps, then down to --lr-floor x --lr by
 the last step, either along a cosine (--schedule cosine, the default) or, with
@@ -233,6 +235,23 @@ def make_optimizers(model, args):
             torch.optim.AdamW(rest, lr=args.lr, weight_decay=args.weight_decay)]
 
 
+# What decides each epoch's data order (and the train / validation split), so a resumed
+# run must match them: the rest of a half-done epoch is then exactly its unseen positions
+ORDER_ARGS = ("data", "sources", "limit", "val_frac", "seed", "batch_size")
+
+
+def order_changes(ckpt, args, train_positions):
+    """{setting: (checkpoint's, this run's)} for every ORDER_ARGS setting (and the number of
+    training positions, if the checkpoint recorded it) that differs; empty if none do."""
+    saved = ckpt.get("args", {})
+    norm = {"data": os.path.realpath, "sources": sorted}
+    changed = {k: (saved[k], getattr(args, k)) for k in ORDER_ARGS if k in saved
+               and norm.get(k, lambda v: v)(saved[k]) != norm.get(k, lambda v: v)(getattr(args, k))}
+    if ckpt.get("train_positions") not in (None, train_positions):
+        changed["training positions"] = (ckpt["train_positions"], train_positions)
+    return changed
+
+
 def as_list(state):
     return state if isinstance(state, list) else [state]
 
@@ -386,6 +405,10 @@ def main():
     start_epoch, start_step, best_val, history, curve = 1, 0, float("inf"), [], []
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
+        changed = order_changes(ckpt, args, len(train_idx))
+        if changed:   # the rest of the epoch would be a different set of positions
+            raise SystemExit(f"--resume {args.resume} would change which positions each step trains on: "
+                             + "; ".join(f"{k} {old!r} -> {new!r}" for k, (old, new) in changed.items()))
         model.load_state_dict(ckpt["model_state_dict"])
         for o, state in zip(optimizers, as_list(ckpt["optimizer_state_dict"]), strict=True):
             o.load_state_dict(state)
@@ -426,6 +449,7 @@ def main():
             "history": history,
             "curve": curve,   # --val-every points
             "args": vars(args),
+            "train_positions": len(train_idx),   # checked on --resume, with ORDER_ARGS
         }
 
     def save(ckpt, name):   # write then rename, so a crash mid-save can't corrupt the file
