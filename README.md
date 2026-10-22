@@ -239,6 +239,9 @@ uv run python -m NoFeat.prepare_data --lichess /path/to/lichess_db_eval.jsonl.zs
 # ... plus the analysed positions of a month of Lichess games (see Data), tagged lichess_games
 uv run python -m NoFeat.prepare_data --lichess /path/to/lichess_db_eval.jsonl.zst \
     --lichess-games /path/to/lichess_db_standard_rated_2026-09.pgn.zst --out /data/slackfish/nofeat_games
+# 1b. For data bigger than RAM: shuffle one or more packed folders into one (see "Shuffled folders"
+# under Data); training then reads it in chunks. 828M positions: 4.5 min.
+uv run python -m NoFeat.shuffle_data data/nofeat_lichess_all --out data/nofeat_lichess_all_shuffled
 
 # 2. Train a named model. --out is required; checkpoints go to <out>/{last,best}.pt
 uv run python -m NoFeat.train --out Models/Weights/SlackFishV-T3 --epochs 10
@@ -680,6 +683,7 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 20. **Muon beat AdamW by a wide margin on a short run.** On V1 with the same schedule and learning rate (Muon's step scaled to AdamW's), Muon cut validation error by 29 cp over 80M positions and was ahead from the first checkpoint, for 7% more time per step.
 21. **The wins stacked, and a wider model finally paid off.** T3's width with 64 tokens, smolgen and Muon (16.0M) beat the smolgen default by 117 Elo at depth 2 and 111 at equal time: 64 tokens and 8 wider heads bought back the speed a model 1.8× the size would lose. The earlier T3 (same width, AdamW at 3e-4, cosine) had lost to the 6.41M model; Muon and the WSD recipe are the likely difference, though this run doesn't separate them.
 22. **A second pass over the same data helped validation more than play.** Resuming T3 from before its decay for a second epoch (9 h) cut validation error from 83.4 to 80.7 cp with no sign of overfitting (the repeated data held validation flat, then the decay brought it down), but scored only +8 and +15 Elo (both within noise) against the 1-epoch model. A month of new game positions had been worth 1.6 cp and 187 Elo: fresh positions beat repeated ones.
+23. **Pre-shuffle the data once instead of shuffling an index in every process.** Writing the positions in random order once (4.5 minutes for 828M) let training read them in chunks: memory per process fell from 15.3 to 1.6 GB at the same speed, so the data no longer has to fit in RAM, only on disk.
 
 Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (smolgen) or a shared relative one, a learning rate scaled to model width, more epochs over the full data, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, a better ranking of the opponent's replies for pondering (12% of moves ranked 11th or worse), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
 
@@ -707,6 +711,8 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── model.py             # ChessTransformerV1, V2, V3 (V3: encoder written out layer by layer)
 │   ├── augment.py           # Colour-swap augmentation
 │   ├── prepare_data.py      # CSVs (+ Lichess evals and games) -> .npz or a packed folder
+│   ├── shuffle_data.py      # packed folders -> one shuffled folder, for data bigger than RAM
+│   ├── score.py             # validation MAE of model files on a folder's validation set
 │   ├── train.py             # Training loop (one GPU, or several under torchrun)
 │   ├── export.py            # Checkpoint -> model.safetensors + config.json
 │   └── evaluator.py         # Load a model for play (CUDA graphs on GPU)
@@ -770,6 +776,20 @@ data/tactic_evals.csv    # 2,628,219 positions
 ### Lichess evaluation database
 
 The [Lichess evaluation database](https://database.lichess.org/#evals) (`lichess_db_eval.jsonl.zst`, 22.4 GB compressed, CC0) has 416,442,401 positions analysed with Stockfish by Lichess users, one JSON line each: a FEN without move counters, and one or more evaluations, each with its search depth and principal variations (`cp` or `mate`, from White's perspective, best line first). `NoFeat.prepare_data --lichess` streams it through `zstd -dc`, takes each position's deepest evaluation, and keeps those searched to depth 20 or more (`--min-depth`): 393,212,303 positions (94.4%). The median depth is about 37, far deeper than the CSVs' depth 22. The positions are ones people chose to analyse, so they lean towards openings, sharp middlegames and endgames rather than random play; 12% of the combined set are forced mates.
+
+### Shuffled folders (data bigger than RAM)
+
+`NoFeat.train` normally holds the whole dataset in the page cache and a shuffled index of it in every process (about 15 GB per process at 828M positions, ~95 GB in all on 4 GPUs), which rules out much more data on a 123 GB machine. `NoFeat.shuffle_data` instead writes one or more packed folders as a single folder in a uniformly random order (out of core: positions are dealt to temporary buckets at random, then each bucket is shuffled in memory, so memory stays small), and keeps its last 0.5% (`--val-frac`) as a fixed validation set. Training on such a folder reads it in order, a few shards at a time: each epoch shuffles the order of its 1M-position shards (`--shard-size`) and the positions within each window of 8 of them (`--window-shards`), from seeded generators, so every GPU process builds the same order on its own and resuming is exact. Nothing per position is built:
+
+| 828M positions, 4 GPUs, t2-sb architecture | Packed folder | Shuffled folder |
+|---|---|---|
+| Private memory per training process | 15.3 GB | **1.6 GB** |
+| System memory in use while training | ~66–95 GB | **15–29 GB** |
+| Training speed (steady) | 25.5–27.5 steps/s | 25.5–27.4 steps/s |
+
+So more data only needs disk: 828M positions shuffle in 4.5 minutes into 31 GB. A shuffled folder trains on all of its sources (it's read in order, so one can't be skipped: shuffle only the folders you want), and `--limit N` takes its first N training positions, already a random sample. Each epoch covers every training position once, and a run resumed mid-epoch finished bit-identical to the same run done straight (in deterministic mode).
+
+The validation set is a different random sample from the packed folders' (`--val-frac` there takes a seeded permutation), so a model's validation score on one split can't be measured on the other: each model trained on ~99.5% of its data, which includes almost all of the other split's validation positions. Compare models by their own held-out score instead (both splits are random samples of over 4M positions from the same data, so they agree within ~0.1 cp), which `NoFeat.score` computes for any model file on a folder's validation set: `uv run python -m NoFeat.score data/nofeat_lichess_all Models/Weights/NAME/model.safetensors` reproduces the training log's numbers (T3: 83.40 vs 83.39 cp).
 
 ### Lichess games
 

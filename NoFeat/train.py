@@ -45,6 +45,15 @@ Data (--data): an .npz from NoFeat.prepare_data, or a packed folder from it
 --val-subset of the validation set every N steps, so a long single epoch still
 gives a learning curve (stored as "curve" in the checkpoint).
 
+Shuffled folders (NoFeat.shuffle_data, for data bigger than RAM): the positions are
+already in random order, so validation is the folder's fixed last positions
+(--val-frac doesn't apply), training the rest (--limit: the first N of them), and
+each epoch reads them a few shards at a time (ShardStream: --shard-size positions per
+shard, the shard order shuffled per epoch and positions within each window of
+--window-shards shards). No per-position index arrays are built, so a process needs
+~1.6 GB of RAM however big the data, and the page cache only the current window. It
+trains on every source in the folder (one can't be skipped while reading in order).
+
 Data sources: --sources picks which CSVs to train on (games, random, tactics).
 The validation split is drawn from every source, and MAE is reported per
 source, so excluded sources (e.g. tactics) still show how the model handles them.
@@ -86,7 +95,12 @@ def parse_args():
     p.add_argument("--sources", nargs="+", default=["games", "random"],
                    help="data sources to train on: games, random, tactics (default: games random)")
     p.add_argument("--limit", type=int, help="use a random sample of N positions (before the source filter)")
-    p.add_argument("--val-frac", type=float, default=0.02)
+    p.add_argument("--val-frac", type=float, default=0.02,
+                   help="validation share (a shuffled --data folder has its own, fixed one)")
+    p.add_argument("--shard-size", type=int, default=1 << 20,
+                   help="shuffled --data: positions per shard (default 1,048,576)")
+    p.add_argument("--window-shards", type=int, default=8,
+                   help="shuffled --data: shards shuffled together at a time (default 8)")
     p.add_argument("--val-every", type=int, default=0,
                    help="also score --val-subset validation positions every N steps (0 = only per epoch)")
     p.add_argument("--val-subset", type=int, default=200_000)
@@ -172,23 +186,29 @@ def load_data(path):
 
     A packed folder is memory-mapped (copy-on-write, never written), so several
     training processes share one copy in the page cache. It is read through once
-    first so training doesn't page it in from disk at random."""
+    first so training doesn't page it in from disk at random; a shuffled folder
+    (NoFeat.shuffle_data) isn't, since training reads it a few shards at a time,
+    and also returns "val" (its last val positions are the validation set)."""
     if not os.path.isdir(path):
         return np.load(path)
     with open(os.path.join(path, "meta.json")) as f:
         meta = json.load(f)
-    n = meta["n"]
+    n, shuffled = meta["n"], meta.get("format") == "packed-shuffled-v1"
 
     def read(name, dtype, shape):
         file = os.path.join(path, f"{name}.bin")
-        with open(file, "rb", buffering=0) as f:
-            buf = bytearray(1 << 26)
-            while f.readinto(buf):
-                pass
+        if not shuffled:
+            with open(file, "rb", buffering=0) as f:
+                buf = bytearray(1 << 26)
+                while f.readinto(buf):
+                    pass
         return np.memmap(file, dtype=dtype, mode="c", shape=shape)
-    return {"squares": read("squares", np.uint8, (n, 32)), "castling": read("castling", np.uint8, n),
+    data = {"squares": read("squares", np.uint8, (n, 32)), "castling": read("castling", np.uint8, n),
             "turn": read("turn", np.uint8, n), "eval": read("eval", np.float32, n),
             "source": read("source", np.uint8, n), "source_names": np.array(meta["source_names"])}
+    if shuffled:
+        data.update(val=meta["val"], train_sources=list(meta["train_source_counts"]))
+    return data
 
 
 CHUNK = 50_000_000   # positions per step of the chunked startup work below
@@ -237,7 +257,7 @@ def make_optimizers(model, args):
 
 # What decides each epoch's data order (and the train / validation split), so a resumed
 # run must match them: the rest of a half-done epoch is then exactly its unseen positions
-ORDER_ARGS = ("data", "sources", "limit", "val_frac", "seed", "batch_size")
+ORDER_ARGS = ("data", "sources", "limit", "val_frac", "seed", "batch_size", "shard_size", "window_shards")
 
 
 def order_changes(ckpt, args, train_positions):
@@ -250,6 +270,71 @@ def order_changes(ckpt, args, train_positions):
     if ckpt.get("train_positions") not in (None, train_positions):
         changed["training positions"] = (ckpt["train_positions"], train_positions)
     return changed
+
+
+def shuffled_split(data, args):
+    """Tensors and split for a shuffled folder (NoFeat.shuffle_data): the positions are
+    already in random order, so the training set is the first ones (--limit of them)
+    and validation the folder's fixed last ones; nothing per position is built."""
+    names = [str(x) for x in data["source_names"]]
+    if set(args.sources) - set(names):
+        raise SystemExit(f"unknown --sources {sorted(set(args.sources) - set(names))}; {args.data} has {names}")
+    if set(data["train_sources"]) - set(args.sources):   # it's read in order, so it can't skip any
+        raise SystemExit(f"{args.data} is shuffled and trains on all of its sources: "
+                         f"--sources {' '.join(data['train_sources'])}")
+    n, n_val = len(data["eval"]), int(data["val"])
+    train = n - n_val if args.limit is None else min(args.limit, n - n_val)
+    tensors = [torch.from_numpy(data[k]) for k in ("squares", "castling", "turn", "source")]
+    stream = ShardStream(train, args.seed, args.shard_size, args.window_shards, args.augment_prob)
+    use = torch.tensor([name in args.sources for name in names])
+    return (*tensors, Targets(torch.from_numpy(data["eval"]), args), train, torch.arange(n - n_val, n),
+            stream, names, use)
+
+
+class ShardStream:
+    """The training order for a shuffled folder, without any per-position arrays: the
+    training positions (already in random order) are split into shards of shard_size;
+    each epoch shuffles the shard order and then the positions within each window of
+    window_shards shards. Everything comes from seeded generators, so every process
+    builds the same order on its own and any step's batch can be rebuilt (resuming),
+    and only the current window is held (its shuffled indices and colour-swap draws)."""
+
+    def __init__(self, n, seed, shard_size, window_shards, augment_prob):
+        self.n, self.seed, self.size, self.k, self.augment_prob = n, seed, shard_size, window_shards, augment_prob
+        self.n_shards = -(-n // shard_size)
+        self.epoch = self.window = None
+
+    def _plan(self, epoch):   # this epoch's shard order and the stream position where each window starts
+        if self.epoch != epoch:
+            shards = torch.randperm(self.n_shards, generator=torch.Generator().manual_seed(self.seed * 1000 + epoch))
+            sizes = torch.full((self.n_shards,), self.size)
+            sizes[-1] = self.n - (self.n_shards - 1) * self.size
+            per_window = sizes[shards].split(self.k)
+            starts = torch.cumsum(torch.tensor([0] + [int(w.sum()) for w in per_window]), 0)
+            self.epoch, self.shards, self.starts, self.window = epoch, shards, starts, None
+        return self.starts
+
+    def _load(self, epoch, w):
+        if self.window is None or self.window[:2] != (epoch, w):
+            idx = torch.cat([torch.arange(s * self.size, min((s + 1) * self.size, self.n))
+                             for s in self.shards[w * self.k:(w + 1) * self.k].tolist()])
+            g = torch.Generator().manual_seed((self.seed * 1000 + epoch) * 100_000 + w)
+            idx = idx[torch.randperm(len(idx), generator=g)]
+            self.window = (epoch, w, idx, torch.rand(len(idx), generator=g) < self.augment_prob)
+        return self.window[2:]
+
+    def take(self, epoch, start, count):
+        """(indices, colour-swap draws) for positions start .. start + count of epoch's order."""
+        starts, idx, swap = self._plan(epoch), [], []
+        while count > 0:
+            w = int(torch.searchsorted(starts, start, right=True)) - 1
+            window_idx, window_swap = self._load(epoch, w)
+            off = start - int(starts[w])
+            k = min(count, len(window_idx) - off)
+            idx.append(window_idx[off:off + k])
+            swap.append(window_swap[off:off + k])
+            start, count = start + k, count - k
+        return torch.cat(idx), torch.cat(swap)
 
 
 def as_list(state):
@@ -323,40 +408,45 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     data = load_data(args.data)
-    total = len(data["eval"])
-    n = total if args.limit is None else min(args.limit, total)
-    # --limit takes a random sample, since the files are concatenated in order
-    keep = (np.sort(np.random.default_rng(args.seed).choice(total, n, replace=False))
-            if n < total else slice(None))
-    squares = torch.from_numpy(data["squares"][keep])
-    castling = torch.from_numpy(data["castling"][keep])
-    turn = torch.from_numpy(data["turn"][keep])
-    if "source" not in data:
-        raise SystemExit(f"{args.data} has no source tags; re-run `uv run python -m NoFeat.prepare_data`")
-    source = torch.from_numpy(data["source"][keep])   # uint8: .long() only on chunks, to save RAM
-    source_names = [str(x) for x in data["source_names"]]
-    unknown = set(args.sources) - set(source_names)
-    if unknown:
-        raise SystemExit(f"unknown --sources {sorted(unknown)}; {args.data} has {source_names}")
-    use = torch.tensor([name in args.sources for name in source_names])
-    targets = Targets(torch.from_numpy(data["eval"][keep]), args)
+    if "val" in data:   # a shuffled folder: no index arrays, see ShardStream
+        squares, castling, turn, source, targets, train_count, val_idx, stream, source_names, use = \
+            shuffled_split(data, args)
+    else:
+        total = len(data["eval"])
+        n = total if args.limit is None else min(args.limit, total)
+        # --limit takes a random sample, since the files are concatenated in order
+        keep = (np.sort(np.random.default_rng(args.seed).choice(total, n, replace=False))
+                if n < total else slice(None))
+        squares = torch.from_numpy(data["squares"][keep])
+        castling = torch.from_numpy(data["castling"][keep])
+        turn = torch.from_numpy(data["turn"][keep])
+        if "source" not in data:
+            raise SystemExit(f"{args.data} has no source tags; re-run `uv run python -m NoFeat.prepare_data`")
+        source = torch.from_numpy(data["source"][keep])   # uint8: .long() only on chunks, to save RAM
+        source_names = [str(x) for x in data["source_names"]]
+        unknown = set(args.sources) - set(source_names)
+        if unknown:
+            raise SystemExit(f"unknown --sources {sorted(unknown)}; {args.data} has {source_names}")
+        use = torch.tensor([name in args.sources for name in source_names])
+        targets = Targets(torch.from_numpy(data["eval"][keep]), args)
 
-    del data
-    # int32 indices halve the index arrays' memory on huge datasets (small ones keep
-    # int64 so their validation split matches earlier runs)
-    index_dtype = torch.int32 if n > 50_000_000 else torch.int64
-    perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed), dtype=index_dtype)
-    n_val = max(1, int(n * args.val_frac))
-    val_idx, train_idx = perm[:n_val].clone(), perm[n_val:]   # train_idx stays a view of perm
-    del perm
-    chosen = in_sources(train_idx, source, use)              # train only on the chosen sources
-    if not chosen.all():   # (when every position is used, skip a full copy of the indices)
-        train_idx = train_idx[chosen]
-    del chosen
+        del data
+        # int32 indices halve the index arrays' memory on huge datasets (small ones keep
+        # int64 so their validation split matches earlier runs)
+        index_dtype = torch.int32 if n > 50_000_000 else torch.int64
+        perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed), dtype=index_dtype)
+        n_val = max(1, int(n * args.val_frac))
+        val_idx, train_idx = perm[:n_val].clone(), perm[n_val:]   # train_idx stays a view of perm
+        del perm
+        chosen = in_sources(train_idx, source, use)              # train only on the chosen sources
+        if not chosen.all():   # (when every position is used, skip a full copy of the indices)
+            train_idx = train_idx[chosen]
+        del chosen
+        train_count, stream = len(train_idx), None
     val_used = in_sources(val_idx, source, use)              # val positions from those sources
     val_subset = val_idx[val_used][:args.val_subset]         # for --val-every
     gpus = f"{world} GPUs, {local_batch} positions each per step" if world > 1 else f"device {device}"
-    log(f"training on {', '.join(args.sources)}: {len(train_idx):,} train / "
+    log(f"training on {', '.join(args.sources)}: {train_count:,} train / "
         f"{val_used.sum().item():,} val (+{(~val_used).sum().item():,} val from other sources), "
         f"{gpus}, {args.precision}")
 
@@ -381,7 +471,7 @@ def main():
         torch.manual_seed(args.seed + rank)   # different dropout per GPU; DDP copies rank 0's weights
 
     optimizers = make_optimizers(model, args)
-    steps_per_epoch = len(train_idx) // args.batch_size   # drop the ragged last batch
+    steps_per_epoch = train_count // args.batch_size   # drop the ragged last batch
     # model stays the bare module (checkpoints, validation); forward averages gradients across GPUs
     forward = torch.compile(model) if args.compile and device.type == "cuda" else model
     if world > 1:
@@ -405,7 +495,7 @@ def main():
     start_epoch, start_step, best_val, history, curve = 1, 0, float("inf"), [], []
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
-        changed = order_changes(ckpt, args, len(train_idx))
+        changed = order_changes(ckpt, args, train_count)
         if changed:   # the rest of the epoch would be a different set of positions
             raise SystemExit(f"--resume {args.resume} would change which positions each step trains on: "
                              + "; ".join(f"{k} {old!r} -> {new!r}" for k, (old, new) in changed.items()))
@@ -449,7 +539,7 @@ def main():
             "history": history,
             "curve": curve,   # --val-every points
             "args": vars(args),
-            "train_positions": len(train_idx),   # checked on --resume, with ORDER_ARGS
+            "train_positions": train_count,   # checked on --resume, with ORDER_ARGS
         }
 
     def save(ckpt, name):   # write then rename, so a crash mid-save can't corrupt the file
@@ -468,24 +558,28 @@ def main():
         criterion = nn.MSELoss()
     model.train()
     for epoch in range(start_epoch, args.epochs + 1):
-        shuffle = torch.Generator().manual_seed(args.seed * 1000 + epoch)
-        order = train_idx[torch.randperm(len(train_idx), generator=shuffle, dtype=index_dtype)]
-        swap = torch.empty(len(order), dtype=torch.bool)   # same draw on resume
-        for i in range(0, len(order), CHUNK):   # in chunks: one float per position would be 4 bytes each
-            swap[i:i + CHUNK] = torch.rand(len(swap[i:i + CHUNK]), generator=shuffle) < args.augment_prob
+        if stream is None:   # one permutation of the training positions per epoch
+            shuffle = torch.Generator().manual_seed(args.seed * 1000 + epoch)
+            order = train_idx[torch.randperm(len(train_idx), generator=shuffle, dtype=index_dtype)]
+            swap = torch.empty(len(order), dtype=torch.bool)   # same draw on resume
+            for i in range(0, len(order), CHUNK):   # in chunks: one float per position would be 4 bytes each
+                swap[i:i + CHUNK] = torch.rand(len(swap[i:i + CHUNK]), generator=shuffle) < args.augment_prob
         first = start_step if epoch == start_epoch else 0
         running, t0 = 0.0, time.time()
         bar = tqdm(range(first, steps_per_epoch), desc=f"epoch {epoch}/{args.epochs}",
                    initial=first, total=steps_per_epoch, disable=rank != 0)
         for step in bar:
             lo = step * args.batch_size + rank * local_batch   # this GPU's slice of the step's batch
-            b = order[lo:lo + local_batch]
+            if stream is None:
+                b, step_swap = order[lo:lo + local_batch], swap[lo:lo + local_batch]
+            else:
+                b, step_swap = stream.take(epoch, lo, local_batch)
             sq = batch_squares(squares, b, device)
             ca = castling[b].to(device, non_blocking=True).long()
             tu = turn[b].to(device, non_blocking=True).long()
             y = targets[b].to(device, non_blocking=True)
             if args.augment_prob > 0:
-                m = swap[lo:lo + local_batch].to(device, non_blocking=True)
+                m = step_swap.to(device, non_blocking=True)
                 msq, mca, mtu = mirror_tokens(sq, ca, tu)
                 sq = torch.where(m[:, None], msq, sq)
                 ca = torch.where(m, mca, ca)

@@ -51,15 +51,16 @@ from the step-320k snapshot (before the decay) with `--epochs 2`. Val 80.7 vs 83
 (−27 to +43) at depth 2 and +15 (−19 to +49) at 0.5 s/move against the 1-epoch model: not clearly
 stronger (a ~1,000-game match would tell). More data looks like the better use of 9 hours.
 
-## Next: more data (needs startup memory work first)
+## Next: more data
 
-One more month of games (~435M positions) would make ~1.26B, needing ~135 GB at startup on 4
-GPUs (123 GB here). The 4 processes each build the same shuffled order (3.3 GB per 828M
-positions, plus a temporary permutation and the training indices); have rank 0 build each epoch's
-order once into a shared memory-mapped file in /dev/shm and the others map it, then drop the
-training indices: ~15 GB -> ~3-5 GB per process, ~75 GB for +1 month, ~95 GB for +2. Same seeded
-order, so results stay bit-identical (check in deterministic mode). `prepare_data`'s
-deduplication also peaked at 65 GB for one month (encode month by month, or bound it the same way).
+**Done, the memory part:** shuffled folders (`NoFeat.shuffle_data`, README "Shuffled folders"):
+training reads the data in chunks, ~1.6 GB per process at any size, the same speed. The data now
+only needs disk. Next: encode more months of games (one month ~435M positions, ~16 GB), shuffle
+them with the current data into one folder, and train T3 on it; compare with the 1-epoch T3 by
+each model's own held-out score and by matches. Cross-month duplicates: `prepare_data`
+deduplicates within one run, so encode the months together, or accept repeats between months
+(a position recurs mostly in openings, which are dropped before ply 15). Encoding: its
+deduplication peaked at 65 GB for one month; encode a month at a time if several don't fit.
 
 ## Deferred
 
