@@ -5,7 +5,7 @@
 #   scripts/lichess-bot.sh blitz [EXTRA ARGS]   # also challenge bots: 10 rated 3+2 games (alias: series)
 #   scripts/lichess-bot.sh bullet [EXTRA ARGS]  # same with 10 rated 1+1 games, tuned for bullet
 #   scripts/lichess-bot.sh challenge NAMES [EXTRA ARGS]   # challenge these users, e.g. matmoi --games 3 --rated
-#   scripts/lichess-bot.sh opponents [--clock 1+1] [--rating 1850-2100]   # list online bots to challenge
+#   scripts/lichess-bot.sh opponents [--clock 1+1] [--rating 2200-2500]   # list online bots to challenge
 #   scripts/lichess-bot.sh pause                # finish the game in progress, then start no more
 #   scripts/lichess-bot.sh resume               # carry on after pause (the series continues)
 #   scripts/lichess-bot.sh stop [--now]         # stop once no game is in progress (--now: right away)
@@ -55,9 +55,9 @@
 #   "take it offline"                     scripts/lichess-bot.sh stop
 #   "play N blitz games vs bots"          scripts/lichess-bot.sh blitz --games N
 #   "play N bullet games vs bots"         scripts/lichess-bot.sh bullet --games N
-#   "... vs bots rated under 2100"        add --opponent-rating 1850-2100 (their rating at that speed)
+#   "... vs bots rated under 2300"        add --opponent-rating 1850-2300 (their rating at that speed)
 #   "challenge X to 3 games"              scripts/lichess-bot.sh challenge X --games 3 (--rated, --clock 1+1)
-#   "who could it play"                   scripts/lichess-bot.sh opponents --clock 1+1 --rating 1850-2100
+#   "who could it play"                   scripts/lichess-bot.sh opponents --clock 1+1 --rating 2200-2500
 #   "pause after this game" / "go on"     scripts/lichess-bot.sh pause / resume
 #   "use another model / depth"           scripts/lichess-bot.sh restart --bot NAME:DEPTH
 #                                         (models: Engine/bots.py BOTS; e.g. t1-3.25m is weaker, for beginners)
@@ -70,8 +70,8 @@
 #
 # Bullet vs blitz settings (what the presets change, and how to adjust them):
 #                 clock   think per move (budget)                     replies pondered   pondered reply played at once from
-#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 5   (--bot t3-sg64-muon-lichessgames-16.0m:5)
-#   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 4   (--bot t3-sg64-muon-lichessgames-16.0m:4)
+#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 6   (--bot t3-sg64-muon-lichessgames-16.0m:6)
+#   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 5   (--bot t3-sg64-muon-lichessgames-16.0m:5)
 #                         4.3 s at 0:40, 2.7 s at 0:20, 1.7 s at 0:08
 #   - Both use 1/12 now (MOVES_LEFT / MOVES_LEFT_BULLET in Engine/lichess.py). Bullet
 #     used 1/20 and finished 1+1 games with ~44 s of 60 unused; at 1/12 it ended a
@@ -116,18 +116,18 @@ BOOK=Cerebellum3Merge.bin
 [ -f "Models/Books/$BOOK" ] || BOOK=gm2001.bin
 # Model and depth: NAME:DEPTH. The search is timed with no depth limit; DEPTH is how
 # deep a pondered reply must have been searched to be played without thinking more.
-DEFAULTS=(--bot t3-sg64-muon-lichessgames-16.0m:5 --book "$BOOK" --book-plies 30)
+DEFAULTS=(--bot t3-sg64-muon-lichessgames-16.0m:6 --book "$BOOK" --book-plies 30)
 # Opponents for the presets: online bots rated this at the series' speed, found when it
 # starts (`opponents` lists them). Any that decline twice or don't answer are skipped
 # for the rest of the run; bots that played 100 bot games today are skipped too.
-OPPONENT_RATING=1850-2100
+OPPONENT_RATING=2200-2500
 # Presets: games against those bots, then it stays online for challenges.
 # Blitz: 1/12 of the clock + increment per move (about 17 s at 3:00), and a pondered
-# reply searched to depth 5 is played at once.
+# reply searched to depth 6 is played at once.
 BLITZ=(--challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 3+2 --rated)
-# Bullet: also 1/12 (about 6 s at 1:00), and a pondered reply searched to depth 4 is
+# Bullet: also 1/12 (about 6 s at 1:00), and a pondered reply searched to depth 5 is
 # played at once.
-BULLET=(--bot t3-sg64-muon-lichessgames-16.0m:4 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
+BULLET=(--bot t3-sg64-muon-lichessgames-16.0m:5 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
 
 # The bot's pid, if it's running (exit status 1 otherwise)
 pid() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && cat "$PIDFILE"; }
