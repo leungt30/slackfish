@@ -47,6 +47,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bots import DEFAULT_BOOK, OpeningBook, load_bot
+from lichess import MOVES_LEFT, MOVES_LEFT_BULLET, move_budget
 from play import game_over
 
 MAX_MOVES = 150
@@ -74,7 +75,8 @@ def init_worker(args):
     # spread the workers over --gpus GPUs (each worker process has its own CUDA context)
     worker = mp.current_process()._identity[0] - 1 if mp.current_process()._identity else 0
     device = f"cuda:{worker % args.gpus}" if args.gpus > 1 else None
-    timed = dict(movetime=args.bot_movetime) if args.bot_movetime else {}
+    # a clock searches by time; movetime is a placeholder, each move gets its own budget
+    timed = dict(movetime=args.bot_movetime or 1.0) if args.bot_movetime or args.clock else {}
     _bot = load_bot(args.bot, depth=args.depth, weights=args.weights, device=device, **timed)
     if args.stockfish_levels:
         _opponent = chess.engine.SimpleEngine.popen_uci(args.stockfish)
@@ -101,12 +103,23 @@ def deepmind_command(spec):
 
 def play(task):
     """One game. Returns (level or None, bot's score)."""
-    opening, bot_white, level, movetime = task
+    opening, bot_white, level, movetime, clock = task
     board = opening.copy()
     if level is not None:
         _opponent.configure({"UCI_LimitStrength": True, "UCI_Elo": level, "Threads": 1, "Hash": 16})
+    left = {chess.WHITE: clock[0], chess.BLACK: clock[0]} if clock else None
     while not game_over(board) and board.fullmove_number <= MAX_MOVES:
-        if (board.turn == chess.WHITE) == bot_white:
+        bots_turn = (board.turn == chess.WHITE) == bot_white
+        if clock:   # bot vs bot on a clock, budgeted as slackfish-bot does on Lichess
+            player, start = _bot if bots_turn else _opponent, time.monotonic()
+            move = player.search(board, movetime=move_budget(left[board.turn], clock[1],
+                                                             moves_left_for(clock[0])))[0]
+            left[board.turn] -= time.monotonic() - start
+            if left[board.turn] < 0:   # flagged: a loss, or a draw if the other side can't mate
+                score = 0.5 if board.has_insufficient_material(not board.turn) else 0.0
+                return level, score if bots_turn else 1 - score
+            left[board.turn] += clock[1]
+        elif bots_turn:
             move = _bot.choose_move(board)
         elif level is not None or isinstance(_opponent, chess.engine.SimpleEngine):
             move = _opponent.play(board, chess.engine.Limit(time=movetime), game=(opening.epd(), bot_white, level)).move
@@ -116,6 +129,10 @@ def play(task):
     outcome = board.outcome(claim_draw=game_over(board))
     score = {"1-0": 1.0, "0-1": 0.0}.get(outcome.result() if outcome else "*", 0.5)
     return level, score if bot_white else 1 - score
+
+
+def moves_left_for(base):
+    return MOVES_LEFT_BULLET if base < 180 else MOVES_LEFT
 
 
 def elo(p):
@@ -148,6 +165,8 @@ def main():
     parser.add_argument("--opponent-weights", help="model file for an opponent bot instead of its registered one")
     parser.add_argument("--bot-movetime", type=float,
                         help="both bots search this many seconds per move instead of to a depth (equal time)")
+    parser.add_argument("--clock", help="bot vs bot on a clock, MINUTES+INCREMENT seconds (e.g. 3+2 for blitz); "
+                        "each move's budget is slackfish-bot's Lichess one, no pondering")
     parser.add_argument("--gpus", type=int, default=1, help="spread the workers over this many GPUs (default 1)")
     parser.add_argument("--hours", type=float,
                         help="stop after this long and report the games finished (games in progress are dropped)")
@@ -155,10 +174,16 @@ def main():
     args.stockfish_levels = ([int(x) for x in args.opponent.split(":", 1)[1].split(",")]
                              if args.opponent.startswith("stockfish:") else None)
 
+    if args.clock:
+        if args.stockfish_levels or args.opponent.startswith("deepmind:"):
+            raise SystemExit("--clock is for bot against bot")
+        base, _, inc = args.clock.partition("+")
+        args.clock = (float(base) * 60, float(inc or 0))
     openings = book_openings(args.openings, args.plies, args.seed)
     levels = args.stockfish_levels or [None]
-    tasks = [(o, bot_white, level, args.movetime) for o in openings for level in levels for bot_white in (True, False)]
-    limit = f"{args.bot_movetime:g} s/move" if args.bot_movetime else f"depth {args.depth}"
+    tasks = [(o, bot_white, level, args.movetime, args.clock) for o in openings for level in levels for bot_white in (True, False)]
+    limit = (f"{args.clock[0] / 60:g}+{args.clock[1]:g} clock" if args.clock
+             else f"{args.bot_movetime:g} s/move" if args.bot_movetime else f"depth {args.depth}")
     bot = f"{args.bot} ({args.weights})" if args.weights else args.bot
     opponent = f"{args.opponent} ({args.opponent_weights})" if args.opponent_weights else args.opponent
     print(f"{bot} ({limit}) vs {opponent}: {len(tasks)} games, {args.workers} workers"
