@@ -46,6 +46,21 @@ parameters, 7.5 h. Val 83.4 cp (vs 88.2 for the smolgen default); against it, +1
 share is unknown; next candidates: next-move prediction on top of this model, and isolating Muon
 (the default's architecture with Muon alone).
 
+**Second epoch** (done, `SlackFishV-T3-SG64-Muon-LichessGames-2ep-16.0M`, not published): resumed
+from the step-320k snapshot (before the decay) with `--epochs 2`. Val 80.7 vs 83.4 cp, but +8 Elo
+(−27 to +43) at depth 2 and +15 (−19 to +49) at 0.5 s/move against the 1-epoch model: not clearly
+stronger (a ~1,000-game match would tell). More data looks like the better use of 9 hours.
+
+## Next: more data (needs startup memory work first)
+
+One more month of games (~435M positions) would make ~1.26B, needing ~135 GB at startup on 4
+GPUs (123 GB here). The 4 processes each build the same shuffled order (3.3 GB per 828M
+positions, plus a temporary permutation and the training indices); have rank 0 build each epoch's
+order once into a shared memory-mapped file in /dev/shm and the others map it, then drop the
+training indices: ~15 GB -> ~3-5 GB per process, ~75 GB for +1 month, ~95 GB for +2. Same seeded
+order, so results stay bit-identical (check in deterministic mode). `prepare_data`'s
+deduplication also peaked at 65 GB for one month (encode month by month, or bound it the same way).
+
 ## Deferred
 
 - **Learning rate for T3 (width 384):** T3 with Muon at 1.2e-3 trained well (above); a lower or
