@@ -164,6 +164,16 @@ uv run python Engine/clockreport.py --max 20 --perf blitz         # the bot's la
 uv run python Engine/clockreport.py https://lichess.org/rs8O1zUO --plot clocks/   # any game, no token needed
 ```
 
+Every game the bot plays is saved to `logs/games/GAMEID.pgn` when it ends (also a game it gave up on after losing the connection, with result `*`). Each of its moves carries what it knew when it chose it, like its log line plus the score: `{ score +35, depth 6, ponder hit #2/3 at d4, 3.10s of 12.50s [%clk 0:02:51] }` (centipawns from White's point of view; `score book` / `score tablebase win, ...` for moves it didn't search). A game resumed after a restart is saved with notes only for the moves made since.
+
+`Engine/mine_hard.py` runs Stockfish over those games and lists the bot's moves that lost more than `--threshold` centipawns against Stockfish's best move, one CSV row each: the position, both moves, Stockfish's eval before and after (centipawns and win probability, the training target's `sigmoid(cp / 400)`), the bot's own score, depth, time and clock. Its summary splits them by phase, by clock, and by whether the bot's score matched Stockfish's eval of the position its move led to (`knew`: it missed a better move) or was well above it (`overrated`: it misjudged where the move leads, the evaluator's errors). Book and tablebase moves are skipped. It's resumable: games already in the CSV (or its `.done` list) are skipped, so a batch can be stopped and run again. Stockfish runs at low priority on 1 thread; depth 18 takes about 25 s per game.
+
+```bash
+uv run python Engine/mine_hard.py logs/games/*.pgn --depth 18 --threshold 150 --out data/hard_positions.csv
+uv run python Engine/mine_hard.py logs/games/*.pgn --max-games 20      # a batch at a time
+uv run python Engine/mine_hard.py --summary --out data/hard_positions.csv
+```
+
 ### Search depth
 
 - **Depth 1** scores every legal move with the model and plays the best one. This is how the original scripts played.
@@ -545,6 +555,14 @@ Depth 4 adds roughly 200 Elo over depth 2. At depth 4, 39 of the 64 games were d
 
 At depth 3 (~0.3 s a move against its ~0.06 s) it is still clearly ahead, though 40% of the games were drawn. With one evaluation per move, the 270M (40× our parameters, trained on 15 billion move evaluations) is far stronger: our evaluation alone is no match for it. With search to depth 6, the bot wins 80% and lost only 2 of 77, so search is worth several hundred Elo over the evaluator here. The paper rates the 270M at 2299 against Lichess bots, about where slackfish-bot (depth 4–5) sits; depth 6 is too slow for Lichess clocks on this GPU (~6 s a move).
 
+**On a blitz clock** (t3-sg64-muon-lichessgames-16.0m, the default bot, 64 book openings with both colours, 128 games, 2 workers on the RTX 2080 Ti, 2026-10-27): `Engine/match.py t3-sg64-muon-lichessgames-16.0m deepmind:270M --clock 3+2 --depth 6 --openings 64 --workers 2` gives the bot a 3+2 clock with slackfish-bot's Lichess time budget (no pondering, no tablebase; the 270M's time is charged to its clock too, about 0.06 s a move).
+
+| Our bot | Games | Score | W / D / L | Elo difference (95%) |
+|---|---|---|---|---|
+| t3-sg64-muon-lichessgames-16.0m, 3+2 clock | 128 | **106 / 128 (83%)** | **87 / 38 / 3** | **+273 (about +225 to +330)** |
+
+It took 5.3 h. The paper's 2299 against Lichess bots and slackfish-bot's 2536 blitz rating predict a gap of about 230 Elo (79%), which the result matches. The comparison is search plus a 16M evaluator against a 270M model with no search at 0.06 s a move, not a comparison of models, and the 128 games share 64 openings, so the interval is rough. The rating gap to the paper's 2895 against humans is not a measurement of strength against humans.
+
 **Speed.** DeepMind's model is GPU-bound: four processes together managed 3.7 moves/s, no more than one alone (3.9), so use `--workers 2` at most (2 was 10% faster than 1 at depth 1). The wrapper pads each batch of legal moves to 8/16/32/48/64 instead of always 64 (1.8×), and by default runs the linear layers in fp16 with Haiku's mixed precision (`jmp`), redoing in fp32 any move whose prediction overflows to NaN (about 1 position in 30 has one; `np.argmax` would otherwise pick it): 16.7 moves/s, the same moves as fp32 on 400 positions, 4.2× the original. All-fp16 doesn't work: the layer norms overflow and the predictions go flat (24/200 moves matched). `deepmind:270M:fp32` runs it in full precision.
 
 **Puzzles.** `Engine/puzzles.py ENGINE` scores a bot (`--depth` / `--movetime`) or `deepmind:MODEL` on the paper's 10,000 Lichess puzzles (`external/searchless_chess/data/puzzles.csv`, downloaded by the setup script), the same way as DeepMind's `src/puzzles.py`: the engine must find every solution move (any mate counts), and the result is broken down by puzzle rating. Paper: 9M 88.9%, 136M 94.5%, 270M 95.4%, Stockfish 16 at 1.5 s 100%. Our bot does about 4 puzzles/s at depth 3 with 6 workers; the 270M about 2/s with 4 workers.
@@ -573,6 +591,20 @@ Ratings after 83 games: blitz 2044, bullet 2066 (bot-pool ratings, not comparabl
 - **Practicalities.** Lichess limits each bot to 100 games a day against other bots, and many bots decline bot challenges, so a challenge list needs 15–20 names to keep a series going.
 
 **With t2-sb-wsd-lichessgames-6.97m** (from 2026-10-15; depth 5 blitz / 4 bullet, 3 pondered replies, the RTX 2080 Ti desktop), over about 170 rated games against bots mostly rated 1850–2400: **blitz 2170 → 2302, bullet 2111 → 2301**, the bot's best ratings so far (2302 / 2296 on 2026-10-16, after 134 blitz and 165 bullet games in all). The one recent loss on time came from a rated 1+0 game another bot sent between series: the time budget assumes an increment, and ~0.2 s/move of lag isn't budgeted, so clocks without increment are now declined (`--allow-no-increment` to accept them).
+
+### Lichess's Stockfish AI (levels 7 and 8)
+
+`lichess.py play --stockfish 7,8` (casual games; Lichess's AI is never rated) with t3-sg64-muon-lichessgames-16.0m, 2026-10-26 to 2026-10-30, RTX 2080 Ti:
+
+| Clock | Bot depth | Level | Games | W / D / L | Score |
+|---|---|---|---|---|---|
+| Bullet 1+1 | 5 | 7 | 8 | 5 / 1 / 2 | 5.5 / 8 |
+| Bullet 1+1 | 5 | 8 | 8 | 1 / 2 / 5 | 2 / 8 |
+| Blitz 3+2 | 6 | 8 | 44 (3 runs) | 18 / 16 / 10 | 26 / 44 (59%) |
+
+Two of the five level-8 bullet losses were on time. More thinking time helps the bot (level 8: 25% at bullet, 59% at blitz), and Lichess's AI plays at the same strength on any clock, so blitz is the fairer test. The AI levels have no published ratings, and the blitz runs are small samples (the three runs scored 2/4, 14.5/20 and 9.5/20).
+
+Lichess answered `429 Too many requests` to new AI challenges after about 20 games in a few hours, and the block lasted many hours (not a message about a daily limit; the cause is unconfirmed). `lichess.py` now waits and retries on a 429 instead of dropping the opponent, which used to end a series early.
 
 ### Lichess bot: time management and pondering (t2-sb-w-lichess-6.97m, RTX 2080 Ti)
 
