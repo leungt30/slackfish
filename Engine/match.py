@@ -112,8 +112,11 @@ def play(task):
         bots_turn = (board.turn == chess.WHITE) == bot_white
         if clock:   # bot vs bot on a clock, budgeted as slackfish-bot does on Lichess
             player, start = _bot if bots_turn else _opponent, time.monotonic()
-            move = player.search(board, movetime=move_budget(left[board.turn], clock[1],
-                                                             moves_left_for(clock[0])))[0]
+            budget = move_budget(left[board.turn], clock[1], moves_left_for(clock[0]))
+            if isinstance(player, chess.engine.SimpleEngine):   # DeepMind's model: one pass, its time is charged all the same
+                move = player.play(board, chess.engine.Limit(time=budget), game=(opening.epd(), bot_white, level)).move
+            else:
+                move = player.search(board, movetime=budget)[0]
             left[board.turn] -= time.monotonic() - start
             if left[board.turn] < 0:   # flagged: a loss, or a draw if the other side can't mate
                 score = 0.5 if board.has_insufficient_material(not board.turn) else 0.0
@@ -165,7 +168,7 @@ def main():
     parser.add_argument("--opponent-weights", help="model file for an opponent bot instead of its registered one")
     parser.add_argument("--bot-movetime", type=float,
                         help="both bots search this many seconds per move instead of to a depth (equal time)")
-    parser.add_argument("--clock", help="bot vs bot on a clock, MINUTES+INCREMENT seconds (e.g. 3+2 for blitz); "
+    parser.add_argument("--clock", help="bot vs bot (or DeepMind) on a clock, MINUTES+INCREMENT seconds (e.g. 3+2 for blitz); "
                         "each move's budget is slackfish-bot's Lichess one, no pondering")
     parser.add_argument("--gpus", type=int, default=1, help="spread the workers over this many GPUs (default 1)")
     parser.add_argument("--hours", type=float,
@@ -175,8 +178,8 @@ def main():
                              if args.opponent.startswith("stockfish:") else None)
 
     if args.clock:
-        if args.stockfish_levels or args.opponent.startswith("deepmind:"):
-            raise SystemExit("--clock is for bot against bot")
+        if args.stockfish_levels:
+            raise SystemExit("--clock is for bot against bot or DeepMind")
         base, _, inc = args.clock.partition("+")
         args.clock = (float(base) * 60, float(inc or 0))
     openings = book_openings(args.openings, args.plies, args.seed)
