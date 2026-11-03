@@ -38,15 +38,24 @@ are never rated; --rated makes the others rated. Opponents that decline twice in
 a row, or don't answer within a minute twice, are dropped. Friends' challenges
 are still accepted between games. When the list is done it prints the score per
 opponent and stays online for challenges.
+
+Every game is saved to logs/games/GAMEID.pgn when it ends (or is abandoned), with
+what the bot knew at each of its moves as a comment: its score (centipawns, White's
+point of view, or book / tablebase), depth, ponder result, seconds used and the clock.
+Engine/mine_hard.py runs Stockfish over them to find the moves it got wrong.
 """
 import argparse
+import faulthandler
+import signal
 import json
 import os
 import threading
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 
 import chess
+import chess.pgn
 import requests
 
 from bots import BOTS, PONDER_REPLIES, ROOT, OpeningBook, SearchAborted, load_bot
@@ -56,12 +65,14 @@ TOKEN_FILE = os.path.join(ROOT, ".lichess_token")
 LAG = 0.3   # seconds kept back from each move's budget for the network round trip
 MOVES_LEFT = 12   # --moves-left for 3+ minute clocks (blitz games ended with 160-245 s unused at 25)
 MOVES_LEFT_BULLET = 12   # ... and under 3 minutes (1+1 games ended with ~44 s of 60 unused at 20)
+DRAW_OFFER_EVERY = 10   # plies between our draw offers, which we make when the tablebase says it's a draw
 DRAW_BELOW = 10   # accept a draw offer when our last eval is under this many centipawns (+0.10) for us
 TABLEBASE = "https://tablebase.lichess.ovh/standard"   # Lichess's free endgame tablebase (up to 7 pieces)
 TABLEBASE_PIECES = 7
 # Control files (scripts/lichess-bot.sh pause / resume / stop): checked twice a second
 PAUSE_FILE = os.path.join(ROOT, "logs", "lichess.pause")   # finish games in progress, then start none
 STOP_FILE = os.path.join(ROOT, "logs", "lichess.stop")     # ... and exit once none is in progress
+GAMES_DIR = os.path.join(ROOT, "logs", "games")   # one PGN per game, for Engine/mine_hard.py
 
 
 def read_token():
@@ -192,7 +203,12 @@ class GamePlayer:
         self.plies = -1      # moves in the last position handled, to skip repeats (draw offers, clock updates)
         self.score = None    # White-perspective score of our last search (None: none yet, or a book move)
         self.draw_answered = None   # plies when we last answered a draw offer
+        self.draw_offered = -DRAW_OFFER_EVERY   # plies when we last offered one
         self.result = None   # (our score 1 / 0.5 / 0, opponent name, AI level or None)
+        # For the game's PGN (save_pgn): the game stream's first event, the moves so far,
+        # (wtime, btime) in ms by number of moves played, and our notes by ply: (uci, comment)
+        self.full, self.moves, self.clocks, self.notes = None, "", {}, {}
+        self.saved = False   # whether save_pgn ran
 
     def run(self):
         """Follow the game stream until the game ends, reconnecting if it drops: the
@@ -211,12 +227,15 @@ class GamePlayer:
             print(f"[{self.game_id}] giving up after repeated connection failures")
         finally:
             self.stop_ponder()
+            if not self.saved:   # ended abnormally: save what we have, result "*"
+                self.save_pgn(None)
 
     def follow(self, first):
         """Read the game stream; True once the game is over."""
         stream = self.li.stream(f"/api/bot/game/stream/{self.game_id}")
         full = next(e for e in stream if e)
         if first:
+            self.full = full
             self.color = chess.WHITE if full["white"].get("id") == self.me else chess.BLACK
             opponent = full["black" if self.color == chess.WHITE else "white"]
             self.opponent = opponent.get("name") or f"Stockfish level {opponent.get('aiLevel')}"
@@ -236,11 +255,14 @@ class GamePlayer:
 
     def on_state(self, state):
         """Handle a game state; returns False once the game is over."""
+        self.moves = state.get("moves", self.moves)
+        self.clocks[self.moves.count(" ") + 1 if self.moves else 0] = (state.get("wtime"), state.get("btime"))
         if state["status"] not in ("created", "started"):
             winner = state.get("winner")
             score = 0.5 if winner is None else 1.0 if (winner == "white") == (self.color == chess.WHITE) else 0.0
             self.result = (score, self.opponent, self.ai_level)
             print(f"[{self.game_id}] {state['status']}: {'won' if score == 1 else 'drew' if score == 0.5 else 'lost'}")
+            self.save_pgn(state)
             return False
         board = self.start.copy()
         for uci in state["moves"].split():
@@ -265,9 +287,12 @@ class GamePlayer:
         return True
 
     def play(self, board, state):
+        entered = time.monotonic()
         if self.pondering is not None:
             self.pondering.finish(board)
             self.pondering = None
+        if time.monotonic() - entered > 1:
+            print(f"[{self.game_id}] slow: stopping the ponder took {time.monotonic() - entered:.1f}s")
         mine = "w" if self.color == chess.WHITE else "b"
         budget = move_budget(state[f"{mine}time"] / 1000, state[f"{mine}inc"] / 1000, self.moves_left)
         start = time.monotonic()
@@ -286,9 +311,78 @@ class GamePlayer:
             how = "book" if self.bot.last_book else f"depth {self.bot.last_depth}{ponder_note(self.bot.last_ponder)}"
         if score is not None:
             self.score = score
+        took = time.monotonic() - start
         print(f"[{self.game_id}] {board.fullmove_number}{'.' if board.turn == chess.WHITE else '...'}"
-              f"{board.san(move)}  ({how}, {time.monotonic() - start:.2f}s of {budget:.2f}s)")
+              f"{board.san(move)}  ({how}, {took:.2f}s of {budget:.2f}s)")
+        posted = time.monotonic()
         self.try_post(f"/api/bot/game/{self.game_id}/move/{move.uci()}")
+        plies = len(board.move_stack) + 1   # with our move played
+        if how in ("tablebase draw", "tablebase blessed-loss") and plies - self.draw_offered >= DRAW_OFFER_EVERY:
+            self.draw_offered = plies
+            print(f"[{self.game_id}] tablebase draw: offering a draw")
+            self.try_post(f"/api/bot/game/{self.game_id}/draw/yes")
+        if time.monotonic() - posted > 1:
+            print(f"[{self.game_id}] slow: sending the move took {time.monotonic() - posted:.1f}s")
+        # This move's PGN comment, the log line with the score added (read by Engine/mine_hard.py),
+        # e.g. "score +35, depth 6, ponder hit #2/3 at d4, 3.10s of 12.50s" or "score book, ..."
+        try:
+            searched = not found and not self.bot.last_book
+            self.notes[plies - 1] = (move.uci(), f"score {f'{score:+.0f}, ' if searched else ''}"
+                                                 f"{how}, {took:.2f}s of {budget:.2f}s")
+        except Exception as e:   # a log must never stop play
+            print(f"[{self.game_id}] couldn't note the move for the PGN ({e!r})")
+
+    def save_pgn(self, end):
+        """Write the game to GAMES_DIR/GAMEID.pgn with our notes (see play) and the clocks
+        as comments. end: the final game state, or None if the game ended abnormally
+        (result "*"). Rewrites the file whole (via a temporary file), so a game resumed
+        after a restart replaces it, with notes only for the moves made since. Never
+        raises: a log must never stop play."""
+        self.saved = True   # tried: a failure isn't retried, so it's reported once
+        try:
+            if self.full is None or not self.moves:   # never joined, or no move played (aborted)
+                return
+            full, game = self.full, chess.pgn.Game()
+            h = game.headers
+            h["Event"] = f"{'Rated' if full.get('rated') else 'Casual'} {full.get('speed', '')} game"
+            h["Site"] = f"https://lichess.org/{self.game_id}"
+            created = full.get("createdAt")
+            h["Date"] = (datetime.fromtimestamp(created / 1000, timezone.utc) if created
+                         else datetime.now(timezone.utc)).strftime("%Y.%m.%d")
+            for side in ("white", "black"):
+                player = full.get(side) or {}
+                h[side.title()] = player.get("name") or f"Stockfish level {player.get('aiLevel')}"
+                if player.get("rating"):
+                    h[f"{side.title()}Elo"] = str(player["rating"])
+            winner = end and end.get("winner")
+            unfinished = end is None or end["status"] in ("aborted", "noStart")
+            h["Result"] = ("*" if unfinished and not winner else "1-0" if winner == "white"
+                           else "0-1" if winner == "black" else "1/2-1/2")
+            clock = full.get("clock") or {}
+            h["TimeControl"] = f"{clock['initial'] // 1000}+{clock['increment'] // 1000}" if clock else "-"
+            h["Rated"] = "Yes" if full.get("rated") else "No"
+            h["Termination"] = end["status"] if end else "unfinished"
+            h["Bot"] = "{}:{}".format(*self.args.bot)
+            if self.start != chess.Board():
+                game.setup(self.start)
+            node = game
+            for i, uci in enumerate(self.moves.split()):
+                node = node.add_variation(chess.Move.from_uci(uci))
+                note = self.notes.get(i)
+                if note and note[0] == uci:
+                    node.comment = note[1]
+                # The mover's clock once it moved; it holds through the reply, if we missed that state
+                white = (i % 2 == 0) == (self.start.turn == chess.WHITE)
+                left = (self.clocks.get(i + 1) or self.clocks.get(i + 2) or (None, None))[0 if white else 1]
+                if left is not None:
+                    node.set_clock(left / 1000)
+            os.makedirs(GAMES_DIR, exist_ok=True)
+            path = os.path.join(GAMES_DIR, f"{self.game_id}.pgn")
+            with open(path + ".tmp", "w") as f:
+                f.write(str(game) + "\n")
+            os.replace(path + ".tmp", path)
+        except Exception as e:
+            print(f"[{self.game_id}] couldn't save the PGN ({e!r})")
 
     def try_post(self, path):
         try:
@@ -404,7 +498,7 @@ class BotRunner:
     def decline_reason(self, c):
         """A Lichess decline reason key, or None to accept. Called with self.lock held."""
         a, tc = self.args, c["timeControl"]
-        if c["variant"]["key"] != "standard":
+        if c["variant"]["key"] not in ("standard", "fromPosition"):   # fromPosition: odds games from a FEN
             return "standard"
         if tc.get("type") != "clock":
             return "timecontrol"
@@ -504,10 +598,13 @@ class BotRunner:
                           f"{', rated' if a.rated and kind == 'user' else ''}), game {self.started + 1}/{a.games}")
                 except requests.RequestException as e:
                     print(f"couldn't challenge {label(opponent)}: {e}")
+                    # rate limits (429) and network errors say nothing about the opponent: wait and try again
+                    transient = not isinstance(e, requests.HTTPError) or e.response is None or e.response.status_code == 429
                     with self.lock:
                         self.pending = None
-                        self.refusals[opponent] += 1
-                    time.sleep(5)
+                        if not transient:
+                            self.refusals[opponent] += 1
+                    time.sleep(120 if transient else 5)
             time.sleep(2)
 
     def cancel(self, challenge_id):
@@ -571,6 +668,7 @@ def parse_clock(spec):
 
 
 def main():
+    faulthandler.register(signal.SIGUSR1, all_threads=True)   # kill -USR1 PID: every thread's stack to stderr (the log)
     parser = argparse.ArgumentParser(description="Run SlackFish as a Lichess bot.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
