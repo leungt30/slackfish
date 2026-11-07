@@ -83,6 +83,7 @@ def init_worker(args):
     elif args.opponent.startswith("deepmind:"):
         _opponent = chess.engine.SimpleEngine.popen_uci(deepmind_command(args.opponent.split(":", 1)[1]),
                                                        timeout=300)   # loading and compiling the model
+        _opponent.ping()   # isready loads the model: do it now, not on its first move's clock
     else:
         _opponent = load_bot(args.opponent, depth=args.opponent_depth or args.depth, weights=args.opponent_weights,
                              device=device, **timed)
