@@ -606,6 +606,43 @@ Two of the five level-8 bullet losses were on time. More thinking time helps the
 
 Lichess answered `429 Too many requests` to new AI challenges after about 20 games in a few hours, and the block lasted many hours (not a message about a daily limit; the cause is unconfirmed). `lichess.py` now waits and retries on a 429 instead of dropping the opponent, which used to end a series early.
 
+### Bullet round-robin (1+1)
+
+`Engine/tournament.py` plays a round-robin on a clock between any bots, DeepMind's models and Stockfish levels, and fits one set of Elo ratings to all the games. Each opening (10 plies from the gm2001 book) is played once with each colour. Pairs are picked by how much a game between them tells the fit (p(1-p) under the current ratings), so close pairs get most of the games. Each game runs in its own process, which loads only its two players before the clock starts. Results go to a JSON-lines file, and a restart with the same `--out` carries on from them.
+
+```bash
+uv run python Engine/tournament.py t3-sg64-muon-lichessgames-16.0m t2-sg-wsd-lichessgames-8.87m \
+    deepmind:270M stockfish:1900 stockfish:2300 --clock 1+1 --workers 4 --out logs/tournament/bullet.jsonl
+uv run python Engine/tournament.py --standings logs/tournament/bullet.jsonl   # the table for a results file
+```
+
+`stockfish:ELO` is Stockfish at that `UCI_Elo` (one thread, managing its own clock). `--deprioritize BOTS` gives pairs of two of those bots a tenth of the weight, for weak bots that are close to each other but say little about the rest.
+
+The 2026-11-02 to 2026-11-04 run: 2,899 games at 1+1, four at a time on one RTX 2080 Ti. The SlackFish bots used the Lichess bot's time budget, without pondering. Elo is relative to DeepMind 270M, fixed at 0, with 95% intervals. SF puts the ratings on Stockfish's `UCI_Elo` scale, shifted so the three Stockfish levels match their labels on average:
+
+| # | Player | Elo | ± | SF | Games | Score |
+|---|---|---|---|---|---|---|
+| 1 | t3-sg64-muon-lichessgames-16.0m | +121 | 43 | 2825 | 543 | 76% |
+| 2 | t2-sg-wsd-lichessgames-8.87m | +32 | 41 | 2735 | 588 | 65% |
+| 3 | DeepMind 270M | 0 | – | 2704 | 617 | 62% |
+| 4 | t2-sb-wsd-lichessgames-6.97m | −28 | 41 | 2675 | 610 | 60% |
+| 5 | t2-sb-w-lichess-6.97m | −325 | 58 | 2378 | 536 | 49% |
+| 6 | t2-w-lichess-6.41m | −346 | 58 | 2358 | 556 | 47% |
+| 7 | DeepMind 9M | −384 | 64 | 2319 | 418 | 48% |
+| 8 | Stockfish 2300 | −536 | 70 | 2167 | 392 | 38% |
+| 9 | Stockfish 1900 | −706 | 86 | 1997 | 299 | 35% |
+| 10 | t2-w-6.41m | −1163 | 161 | 1541 | 323 | 37% |
+| 11 | Stockfish 1500 | −1168 | 162 | 1535 | 295 | 41% |
+| 12 | t2-6.41m | −1326 | 166 | 1378 | 308 | 25% |
+| 13 | t1-3.25m | −1370 | 167 | 1334 | 313 | 19% |
+
+- **t3 against the rest:** +89 (+47 to +132) over t2-sg, and 81.5/136 head to head.
+- **Smolgen at bullet:** t2-sg is +60 (+18 to +102) over t2-sb-wsd-lichessgames, which differs from it only by smolgen. That's 64/116 head to head. The gain is close to the +67 at 0.5 s/move and below the +96 at depth 2.
+- **First to latest:** t3 is about +1,490 (+1,323 to +1,659) over t1-3.25m.
+- **DeepMind's models hold up at bullet:** they move after one forward pass and keep most of their clock. The 270M ties the t2 Lichess-games models. The 9M is level with the older Lichess models (t2-sb-w and t2-w-lichess) and beat Stockfish 2300.
+- **Stockfish's levels bunch together at 1+1:** 1900 and 2300 came out about 170 apart instead of 400, and 1500 and 1900 about 460. So the SF column is good to a couple of hundred points.
+- **No losses on time** by any player. About 5% of games hit the 150-move cap and were scored as draws, which slightly compresses the gaps.
+
 ### Lichess bot: time management and pondering (t2-sb-w-lichess-6.97m, RTX 2080 Ti)
 
 After moving the bot to the desktop and switching it to the spatial-bias model, its clock use and pondering were measured and tuned with the tools above (`Engine/timebench.py`, `Engine/clockreport.py`, `Engine/ponderstats.py`).
@@ -728,6 +765,7 @@ Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (sm
 │   ├── play.py              # Game runner + CLI (bot/human vs bot/human)
 │   ├── gui.py, gui.html     # Browser GUI for human vs bot (Chessground board)
 │   ├── match.py             # Strength tests: bot vs bot, vs Stockfish levels, or vs DeepMind's model
+│   ├── tournament.py        # Round-robin of many bots, DeepMind and Stockfish levels on a clock, one Elo fit
 │   ├── deepmind_uci.py      # DeepMind's searchless transformer as a UCI benchmark opponent
 │   ├── puzzles.py           # Puzzle accuracy on the DeepMind paper's 10,000 Lichess puzzles
 │   ├── timebench.py         # Time per search depth; checks the timed search's GROWTH floors
