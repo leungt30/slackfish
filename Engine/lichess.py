@@ -84,6 +84,7 @@ TABLEBASE_PIECES = 7
 # Control files (scripts/lichess-bot.sh pause / resume / stop): checked twice a second
 PAUSE_FILE = os.path.join(ROOT, "logs", "lichess.pause")   # finish games in progress, then start none
 STOP_FILE = os.path.join(ROOT, "logs", "lichess.stop")     # ... and exit once none is in progress
+ANSWER_WAIT = 30   # seconds an idle, online opponent gets to accept a challenge before we cancel it
 NETWORK_QUIET = 300   # seconds without a connection error before challenging or accepting a game
 GIVE_UP_MARGIN = 120   # keep reconnecting to a game this long past our clock running out
 GAMES_DIR = os.path.join(ROOT, "logs", "games")   # one PGN per game, for Engine/mine_hard.py
@@ -511,6 +512,7 @@ class BotRunner:
         self.turn = 0          # index of the next opponent
         self.pending = None    # (challenge or game id, opponent, sent at) while waiting for an answer
         self.accepted = {}     # incoming challenge id -> accepted at, until its game starts (holds a slot)
+        self.free, self.free_at, self.waiting_note = None, -1e9, 0.0
         self.refusals = defaultdict(int)   # opponent -> declines / no answers in a row
         self.challenged = set()            # game ids from our own challenges
         self.started = 0                   # our challenges that became games
@@ -654,6 +656,24 @@ class BotRunner:
                                else f"the search failed during game {player.game_id}")
                 print(f"stopping the challenge series: {self.halted}. Restart it once the network is stable.")
 
+    def free_users(self):
+        """Names of the listed opponents that are online and not in a game (None if Lichess can't say).
+        Busy or offline bots can't accept, and waiting out their silence cost a minute and a strike each."""
+        if time.monotonic() - self.free_at < 15:
+            return self.free
+        names = [who for kind, who in self.opponents if kind == "user"]
+        free = None
+        if names:
+            try:
+                r = self.li._request("GET", "/api/users/status", params={"ids": ",".join(names)}, timeout=15)
+                r.raise_for_status()
+                up = {u["name"].lower() for u in r.json() if u.get("online") and not u.get("playing")}
+                free = {n for n in names if n.lower() in up}
+            except (requests.RequestException, ValueError, KeyError):
+                free = None
+        self.free, self.free_at = free, time.monotonic()
+        return free
+
     def challenge_when_idle(self):
         a = self.args
         if not self.opponents:
@@ -670,8 +690,9 @@ class BotRunner:
                 holding = unstable
                 print(f"connection unstable: no new challenges until {NETWORK_QUIET // 60} minutes without errors"
                       if unstable else "connection stable again: resuming challenges")
+            free = self.free_users() if not self.pending and not self.games and not unstable else None
             with self.lock:
-                if self.pending and time.monotonic() - self.pending[2] > 60:   # no answer: offline or ignoring us
+                if self.pending and time.monotonic() - self.pending[2] > ANSWER_WAIT:   # no answer: offline or ignoring us
                     stale, self.pending = self.pending, None
                     self.refusals[stale[1]] += 1
                     print(f"{label(stale[1])} didn't answer; canceling")
@@ -688,11 +709,17 @@ class BotRunner:
                 held = os.path.exists(PAUSE_FILE) or os.path.exists(STOP_FILE)
                 if (not held and not unstable and not self.games and not self.accepted and not self.pending
                         and self.started < a.games):
-                    while self.refusals[self.opponents[self.turn % len(self.opponents)]] >= 2:
+                    for _ in range(len(self.opponents)):   # next willing opponent that is online and not in a game
+                        cand = self.opponents[self.turn % len(self.opponents)]
                         self.turn += 1
-                    opponent = self.opponents[self.turn % len(self.opponents)]
-                    self.turn += 1
-                    self.pending = (None, opponent, time.monotonic())   # holds the slot while we ask
+                        if self.refusals[cand] < 2 and (cand[0] == "ai" or free is None or cand[1] in free):
+                            opponent = cand
+                            break
+                    if opponent:
+                        self.pending = (None, opponent, time.monotonic())   # holds the slot while we ask
+                    elif time.monotonic() - self.waiting_note > 600:
+                        self.waiting_note = time.monotonic()
+                        print("no listed opponent is online and free; waiting")
             if opponent:
                 kind, who = opponent
                 clock = {"clock.limit": int(base), "clock.increment": int(inc), "color": "random"}
