@@ -26,6 +26,7 @@ import chess
 import chess.pgn
 
 from bots import BOTS, DEFAULT_BOOK, OpeningBook, load_bot
+from clock import game_over
 
 
 class HumanPlayer:
@@ -68,12 +69,6 @@ def make_player(spec: str, default_depth: int = 1, weights: str | None = None,
     return load_bot(name, depth=int(depth) if depth else default_depth, weights=weights,
                     temperature=float(temperature) if temperature else default_temperature, seed=seed,
                     quiescence_depth=quiescence, book=book)
-
-
-def game_over(board: chess.Board) -> bool:
-    """Draw only once a repetition/50-move draw has actually happened, not merely
-    because one side *could* claim one with its next move."""
-    return board.is_game_over() or board.is_repetition(3) or board.is_fifty_moves()
 
 
 def play_game(white, black, fen: str | None = None, verbose: bool = True,

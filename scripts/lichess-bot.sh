@@ -82,7 +82,7 @@
 #     check `grep "of [0-9.]*s)" logs/lichess.out` for time used vs budget and Engine/clockreport.py
 #     for time left at the end: if it finishes with over a third of the clock, lower --moves-left
 #     (12, as in blitz); if it is under 30 s with moves to go, raise it (16-18).
-#   - Both use 1/12 now (MOVES_LEFT / MOVES_LEFT_BULLET in Engine/lichess.py). Bullet
+#   - Both use 1/12 now (MOVES_LEFT / MOVES_LEFT_BULLET in Engine/clock.py). Bullet
 #     used 1/20 and finished 1+1 games with ~44 s of 60 unused; at 1/12 it ended a
 #     10-game series with a median 29 s left and reached depth 5+ on half its moves.
 #   - Replies pondered (--ponder-replies, default 3 = PONDER_REPLIES in Engine/bots.py). With
@@ -101,9 +101,9 @@
 #
 # Reading logs/lichess.out (one line per event):
 #   [GAMEID] White vs NAME (blitz, rated): URL     a game started (bullet / blitz / rapid)
-#   [GAMEID] 12.Nf3  (depth 5, ponder hit #2/5 at d4, 3.10s of 12.50s)
-#        move played; search depth; the opponent played the 2nd likeliest of the 5
-#        replies pondered on its time, pondered to depth 4 ("ponder miss: #7/5" = it
+#   [GAMEID] 12.Nf3  (depth 5, ponder hit #2/3 at d4, 3.10s of 12.50s)
+#        move played; search depth; the opponent played the 2nd likeliest of the 3
+#        replies pondered on its time, pondered to depth 4 ("ponder miss: #7/3" = it
 #        played the 7th, not pondered); seconds used of the move's time budget.
 #        Engine/ponderstats.py sums these up by rank.
 #        "(book, ...)" = opening book move, no search.

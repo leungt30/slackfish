@@ -36,20 +36,23 @@ DEFAULT_CSV = os.path.join(os.environ.get("SEARCHLESS_CHESS", os.path.join(os.pa
                            "data", "puzzles.csv")
 BANDS = [0, 1000, 1500, 2000, 2500, 3000, 10_000]
 _engine = None   # per worker process
+_reset = lambda: None   # called before each puzzle
 
 
 def init_worker(args):
-    global _engine
+    global _engine, _reset
     if args.engine.startswith("deepmind:"):
         uci = chess.engine.SimpleEngine.popen_uci(deepmind_command(args.engine.split(":", 1)[1]), timeout=300)
         _engine = lambda board: uci.play(board, chess.engine.Limit(time=1)).move
     else:
         bot = load_bot(args.engine, depth=args.depth, movetime=args.movetime)
         _engine = bot.choose_move
+        _reset = bot.new_game   # nothing kept from one puzzle to the next
 
 
 def solve(puzzle):
     """(rating, solved) for one puzzle row."""
+    _reset()
     board = chess.pgn.read_game(io.StringIO(puzzle["PGN"])).end().board()
     for i, uci in enumerate(puzzle["Moves"].split()):
         if i % 2 == 1:

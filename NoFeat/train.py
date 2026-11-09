@@ -291,6 +291,18 @@ def shuffled_split(data, args):
             stream, names, use)
 
 
+def val_split(n, seed, frac):
+    """(validation indices, training indices) of an unshuffled dataset of n positions: a
+    seeded permutation, the first max(1, n * frac) of it held out. NoFeat.score rebuilds
+    the validation part with the same seed; a smaller frac gives a subset of it."""
+    # int32 indices halve the index arrays' memory on huge datasets (small ones keep
+    # int64 so their validation split matches earlier runs)
+    dtype = torch.int32 if n > 50_000_000 else torch.int64
+    perm = torch.randperm(n, generator=torch.Generator().manual_seed(seed), dtype=dtype)
+    n_val = max(1, int(n * frac))
+    return perm[:n_val].clone(), perm[n_val:]   # the training part stays a view of perm
+
+
 class ShardStream:
     """The training order for a shuffled folder, without any per-position arrays: the
     training positions (already in random order) are split into shards of shard_size;
@@ -431,13 +443,8 @@ def main():
         targets = Targets(torch.from_numpy(data["eval"][keep]), args)
 
         del data
-        # int32 indices halve the index arrays' memory on huge datasets (small ones keep
-        # int64 so their validation split matches earlier runs)
-        index_dtype = torch.int32 if n > 50_000_000 else torch.int64
-        perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed), dtype=index_dtype)
-        n_val = max(1, int(n * args.val_frac))
-        val_idx, train_idx = perm[:n_val].clone(), perm[n_val:]   # train_idx stays a view of perm
-        del perm
+        val_idx, train_idx = val_split(n, args.seed, args.val_frac)
+        index_dtype = train_idx.dtype
         chosen = in_sources(train_idx, source, use)              # train only on the chosen sources
         if not chosen.all():   # (when every position is used, skip a full copy of the indices)
             train_idx = train_idx[chosen]
