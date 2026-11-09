@@ -4,6 +4,7 @@
 #   scripts/lichess-bot.sh start [EXTRA ARGS]   # go online and accept challenges
 #   scripts/lichess-bot.sh blitz [EXTRA ARGS]   # also challenge bots: 10 rated 3+2 games (alias: series)
 #   scripts/lichess-bot.sh bullet [EXTRA ARGS]  # same with 10 rated 1+1 games, tuned for bullet
+#   scripts/lichess-bot.sh rapid [EXTRA ARGS]   # same with 10 rated 10+5 games, tuned for rapid
 #   scripts/lichess-bot.sh challenge NAMES [EXTRA ARGS]   # challenge these users, e.g. matmoi --games 3 --rated
 #   scripts/lichess-bot.sh opponents [--clock 1+1] [--rating 2200-2500]   # list online bots to challenge
 #   scripts/lichess-bot.sh pause                # finish the game in progress, then start no more
@@ -55,6 +56,7 @@
 #   "take it offline"                     scripts/lichess-bot.sh stop
 #   "play N blitz games vs bots"          scripts/lichess-bot.sh blitz --games N
 #   "play N bullet games vs bots"         scripts/lichess-bot.sh bullet --games N
+#   "play N rapid games vs bots"          scripts/lichess-bot.sh rapid --games N (--clock 15+10, --casual)
 #   "... vs bots rated under 2300"        add --opponent-rating 1850-2300 (their rating at that speed)
 #   "challenge X to 3 games"              scripts/lichess-bot.sh challenge X --games 3 (--rated, --clock 1+1)
 #   "who could it play"                   scripts/lichess-bot.sh opponents --clock 1+1 --rating 2200-2500
@@ -73,6 +75,13 @@
 #   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 6   (--bot t3-sg64-muon-lichessgames-16.0m:6)
 #   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 5   (--bot t3-sg64-muon-lichessgames-16.0m:5)
 #                         4.3 s at 0:40, 2.7 s at 0:20, 1.7 s at 0:08
+#   rapid         10+5    1/14 of clock + increment: ~43 s + 5 at 10:00  3                  depth 7   (--bot t3-sg64-muon-lichessgames-16.0m:7 --moves-left 14)
+#   - Rapid: the budget is 1/14 so a long game (90+ moves) doesn't run low; at 10+5 the bot adds
+#     5 s a move, so it spends the clock down slowly. These are starting values chosen from the
+#     blitz data (about +1 ply per tripling of time), not measured on rapid games. After a series,
+#     check `grep "of [0-9.]*s)" logs/lichess.out` for time used vs budget and Engine/clockreport.py
+#     for time left at the end: if it finishes with over a third of the clock, lower --moves-left
+#     (12, as in blitz); if it is under 30 s with moves to go, raise it (16-18).
 #   - Both use 1/12 now (MOVES_LEFT / MOVES_LEFT_BULLET in Engine/lichess.py). Bullet
 #     used 1/20 and finished 1+1 games with ~44 s of 60 unused; at 1/12 it ended a
 #     10-game series with a median 29 s left and reached depth 5+ on half its moves.
@@ -129,6 +138,12 @@ BLITZ=(--challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 
 # played at once.
 BULLET=(--bot t3-sg64-muon-lichessgames-16.0m:5 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
 
+# Rapid: 10+5 (rapid is 8-25 minutes of estimated play: base + 40 increments). More thinking
+# time per move: 1/14 of the clock + increment (about 43 s + 5 at 10:00), and a pondered reply
+# searched to depth 7 is played at once. Starting values, not yet tuned against games (see the
+# notes below for how to check them).
+RAPID=(--bot t3-sg64-muon-lichessgames-16.0m:7 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 10+5 --rated --moves-left 14)
+
 # The bot's pid, if it's running (exit status 1 otherwise)
 pid() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && cat "$PIDFILE"; }
 
@@ -171,6 +186,7 @@ case "${1:-}" in
     start) shift; start "$@" ;;
     blitz|series) shift; switch "${BLITZ[@]}" "$@" ;;
     bullet) shift; switch "${BULLET[@]}" "$@" ;;
+    rapid) shift; switch "${RAPID[@]}" "$@" ;;
     challenge)
         shift; [ -n "${1:-}" ] || { echo "usage: challenge NAME[,NAME...] [EXTRA ARGS]"; exit 1; }
         who=$1; shift; switch --challenge "$who" --games 3 "$@" ;;
