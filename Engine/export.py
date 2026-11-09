@@ -16,11 +16,12 @@ import chess
 import chess.svg
 from PIL import Image, ImageDraw, ImageFont
 
+from clock import game_over   # shared draw rules
+
 CAPTION_HEIGHT = 0.11   # fraction of the board size
 
 
 def _result_text(board: chess.Board) -> str | None:
-    from play import game_over   # shared draw rules
     if not game_over(board):
         return None
     outcome = board.outcome(claim_draw=True)

@@ -46,9 +46,8 @@ import chess.engine
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bots import DEFAULT_BOOK, OpeningBook, load_bot
-from lichess import MOVES_LEFT, MOVES_LEFT_BULLET, move_budget
-from play import game_over
+from bots import DEFAULT_BOOK, Bot, OpeningBook, load_bot
+from clock import game_over, parse_clock, play_clocked, score
 
 MAX_MOVES = 150
 _bot = _opponent = None   # per worker process
@@ -106,24 +105,21 @@ def play(task):
     """One game. Returns (level or None, bot's score)."""
     opening, bot_white, level, movetime, clock = task
     board = opening.copy()
+    for player in (_bot, _opponent):   # each game starts fresh: no search state from the last one
+        if isinstance(player, Bot):
+            player.new_game()
     if level is not None:
         _opponent.configure({"UCI_LimitStrength": True, "UCI_Elo": level, "Threads": 1, "Hash": 16})
-    left = {chess.WHITE: clock[0], chess.BLACK: clock[0]} if clock else None
-    while not game_over(board) and board.fullmove_number <= MAX_MOVES:
-        bots_turn = (board.turn == chess.WHITE) == bot_white
-        if clock:   # bot vs bot on a clock, budgeted as slackfish-bot does on Lichess
-            player, start = _bot if bots_turn else _opponent, time.monotonic()
-            budget = move_budget(left[board.turn], clock[1], moves_left_for(clock[0]))
+    if clock:   # bot vs bot (or DeepMind) on a clock, budgeted as slackfish-bot does on Lichess
+        def choose(board, budget, left):
+            player = _bot if (board.turn == chess.WHITE) == bot_white else _opponent
             if isinstance(player, chess.engine.SimpleEngine):   # DeepMind's model: one pass, its time is charged all the same
-                move = player.play(board, chess.engine.Limit(time=budget), game=(opening.epd(), bot_white, level)).move
-            else:
-                move = player.search(board, movetime=budget)[0]
-            left[board.turn] -= time.monotonic() - start
-            if left[board.turn] < 0:   # flagged: a loss, or a draw if the other side can't mate
-                score = 0.5 if board.has_insufficient_material(not board.turn) else 0.0
-                return level, score if bots_turn else 1 - score
-            left[board.turn] += clock[1]
-        elif bots_turn:
+                return player.play(board, chess.engine.Limit(time=budget), game=(opening.epd(), bot_white, level)).move
+            return player.search(board, movetime=budget)[0]
+        result, _ = play_clocked(board, choose, clock, MAX_MOVES)
+        return level, score(result, chess.WHITE if bot_white else chess.BLACK)
+    while not game_over(board) and board.fullmove_number <= MAX_MOVES:
+        if (board.turn == chess.WHITE) == bot_white:
             move = _bot.choose_move(board)
         elif level is not None or isinstance(_opponent, chess.engine.SimpleEngine):
             move = _opponent.play(board, chess.engine.Limit(time=movetime), game=(opening.epd(), bot_white, level)).move
@@ -131,12 +127,7 @@ def play(task):
             move = _opponent.choose_move(board)
         board.push(move)
     outcome = board.outcome(claim_draw=game_over(board))
-    score = {"1-0": 1.0, "0-1": 0.0}.get(outcome.result() if outcome else "*", 0.5)
-    return level, score if bot_white else 1 - score
-
-
-def moves_left_for(base):
-    return MOVES_LEFT_BULLET if base < 180 else MOVES_LEFT
+    return level, score(outcome.result() if outcome else "*", chess.WHITE if bot_white else chess.BLACK)
 
 
 def elo(p):
@@ -181,8 +172,7 @@ def main():
     if args.clock:
         if args.stockfish_levels:
             raise SystemExit("--clock is for bot against bot or DeepMind")
-        base, _, inc = args.clock.partition("+")
-        args.clock = (float(base) * 60, float(inc or 0))
+        args.clock = parse_clock(args.clock)
     openings = book_openings(args.openings, args.plies, args.seed)
     levels = args.stockfish_levels or [None]
     tasks = [(o, bot_white, level, args.movetime, args.clock) for o in openings for level in levels for bot_white in (True, False)]

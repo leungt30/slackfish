@@ -26,7 +26,7 @@ and measured:
                 --rush x early, and the clock it had then
   share         median fraction of its remaining clock spent per move, early and late.
                 A player that budgets a fixed share of its clock (as slackfish-bot does:
-                1/12, 1/20 under 3 minutes) slows down as its clock falls while its
+                1/12, Engine/clock.py) slows down as its clock falls while its
                 share stays level; a share that falls too means it sped up beyond that
   instant       how many late-window moves took under 0.3 s: a pondering bot's replies
                 to a predicted move (slackfish-bot plays those at once) or premoves

@@ -18,7 +18,7 @@ import torch
 
 from NoFeat import model as models
 from NoFeat.evaluator import load_model
-from NoFeat.train import batch_squares, load_data
+from NoFeat.train import batch_squares, load_data, val_split
 
 
 def validation_set(data, args):
@@ -26,10 +26,7 @@ def validation_set(data, args):
     if "val" in data:
         n = len(data["eval"])
         return torch.arange(n - int(data["val"]), n)
-    n = len(data["eval"])   # NoFeat.train's split of a whole (not --limit'ed) file
-    dtype = torch.int32 if n > 50_000_000 else torch.int64
-    perm = torch.randperm(n, generator=torch.Generator().manual_seed(args.seed), dtype=dtype)
-    return perm[:max(1, int(n * args.val_frac))].clone()
+    return val_split(len(data["eval"]), args.seed, args.val_frac)[0]   # NoFeat.train's split of a whole (not --limit'ed) file
 
 
 @torch.no_grad()
@@ -53,7 +50,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("data", help="a shuffled folder, or the .npz / packed folder the models were trained on")
     p.add_argument("models", nargs="+", help="model.safetensors or .pt files")
-    p.add_argument("--val-frac", type=float, default=0.005, help="for an unshuffled --data: as in training")
+    p.add_argument("--val-frac", type=float, default=0.005, help="for an unshuffled --data: at most the training run's --val-frac (default 0.02), so every position scored was held out")
     p.add_argument("--seed", type=int, default=42, help="for an unshuffled --data: as in training")
     p.add_argument("--limit", type=int, help="score only the first N validation positions")
     args = p.parse_args()

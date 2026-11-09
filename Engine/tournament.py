@@ -43,9 +43,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bots import load_bot
-from match import MAX_MOVES, book_openings, deepmind_command, moves_left_for
-from lichess import move_budget
-from play import game_over
+from clock import parse_clock, play_clocked
+from match import MAX_MOVES, book_openings, deepmind_command
 
 RESULT = "RESULT "   # prefix of the result line a game process prints
 PRIOR_SD = 1000   # Elo: the weak prior on each rating's distance from the anchor
@@ -107,33 +106,24 @@ def play_game(task):
     board = chess.Board(fen)
     players = {chess.WHITE: player(white_name), chess.BLACK: player(black_name)}
     players_name = {chess.WHITE: white_name, chess.BLACK: black_name}
-    left = {chess.WHITE: clock[0], chess.BLACK: clock[0]}
     game = chess.pgn.Game.from_board(board)
-    node, result, termination = game, None, None
-    while not game_over(board) and board.fullmove_number <= MAX_MOVES:
-        p, start = players[board.turn], time.monotonic()
-        budget = move_budget(left[board.turn], clock[1], moves_left_for(clock[0]))
+    node = game
+
+    def choose(board, budget, left):
+        p = players[board.turn]
         if isinstance(p, chess.engine.SimpleEngine) and players_name[board.turn].startswith("stockfish:"):
             limit = chess.engine.Limit(white_clock=left[chess.WHITE], black_clock=left[chess.BLACK],
                                        white_inc=clock[1], black_inc=clock[1])
-            move = p.play(board, limit, game=game).move   # Stockfish runs its own clock
-        elif isinstance(p, chess.engine.SimpleEngine):   # DeepMind: one pass, its time is charged all the same
-            move = p.play(board, chess.engine.Limit(time=budget), game=game).move
-        else:
-            move = p.search(board, movetime=budget)[0]
-        left[board.turn] -= time.monotonic() - start
-        if left[board.turn] < 0:   # flagged: a loss, or a draw if the other side can't mate
-            draw = board.has_insufficient_material(not board.turn)
-            result = "1/2-1/2" if draw else "0-1" if board.turn == chess.WHITE else "1-0"
-            termination = "time forfeit"
-            break
-        left[board.turn] += clock[1]
-        board.push(move)
+            return p.play(board, limit, game=game).move   # Stockfish runs its own clock
+        if isinstance(p, chess.engine.SimpleEngine):   # DeepMind: one pass, its time is charged all the same
+            return p.play(board, chess.engine.Limit(time=budget), game=game).move
+        return p.search(board, movetime=budget)[0]
+
+    def on_move(move):
+        nonlocal node
         node = node.add_variation(move)
-    if result is None:
-        outcome = board.outcome(claim_draw=game_over(board))
-        result = outcome.result() if outcome else "1/2-1/2"
-        termination = outcome.termination.name.lower() if outcome else f"move {MAX_MOVES} adjudicated draw"
+
+    result, termination = play_clocked(board, choose, clock, MAX_MOVES, on_move)
     game.headers.update(White=white_name, Black=black_name, Result=result, Termination=termination,
                         TimeControl=f"{clock[0]:g}+{clock[1]:g}")
     return dict(white=white_name, black=black_name, result=result, termination=termination,
@@ -276,8 +266,7 @@ def main():
     if len(names) < 2:
         raise SystemExit("need at least two bots")
     anchor = args.anchor or ("deepmind:270M" if "deepmind:270M" in names else names[0])
-    base, _, inc = args.clock.partition("+")
-    clock = (float(base) * 60, float(inc or 0))
+    clock = parse_clock(args.clock)
     pairs = list(itertools.combinations(sorted(names), 2))
     openings = [b.fen() for b in book_openings(args.openings, args.plies, args.seed)]
     rng = np.random.default_rng(args.seed + len(records))

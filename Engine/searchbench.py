@@ -146,11 +146,7 @@ def run(name, positions, bot, args):
             continue
         if args.limit is not None and total >= args.limit:
             break
-        bot.cache.clear()
-        bot.tt.clear()
-        bot.pondered.clear()
-        bot.history.clear()
-        bot.last_search = None
+        bot.new_game(keep_cache=False)   # each position searched from cold
         start = time.perf_counter()
         move, _ = bot.search(board)
         dt = time.perf_counter() - start

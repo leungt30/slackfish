@@ -7,9 +7,9 @@ bot had pondered, and which one by rank, to choose how many replies to ponder
     uv run python Engine/ponderstats.py --speed bullet
     uv run python Engine/ponderstats.py logs/lichess.out   # one log
 
-Engine/lichess.py logs each searched move's ponder result: "ponder hit #2/5 at d4"
-(the opponent played the 2nd likeliest reply; up to 5 were pondered; it was pondered to
-depth 4), "ponder miss: #7/5" (ranked 7th, not searched) or "ponder miss: unranked".
+Engine/lichess.py logs each searched move's ponder result: "ponder hit #2/3 at d4"
+(the opponent played the 2nd likeliest reply; 3 were pondered; it was pondered to
+depth 4), "ponder miss: #7/3" (ranked 7th, not searched) or "ponder miss: unranked".
 Pondering ranks every reply the opponent has (the transposition table's best move,
 then by network score) and searches the first PONDER_REPLIES together, a depth at a
 time, until the opponent moves.

@@ -16,7 +16,6 @@ from typing import Callable
 
 import chess
 import chess.polyglot
-import joblib
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,12 +27,25 @@ DEFAULT_BOOK = os.path.join(ROOT, "Models", "Books", "gm2001.bin")
 # NoFeat/export.py). A missing model is downloaded from here on first use.
 # SLACKFISH_HF_REPO overrides it; set it to "" for local files only.
 HF_REPO = os.environ.get("SLACKFISH_HF_REPO", "mathemagicianz/slackfish") or None
-for p in (ROOT, os.path.join(ROOT, "Models", "Training")):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+if ROOT not in sys.path:   # for NoFeat (and featureEng)
+    sys.path.insert(0, ROOT)
 
-from Models import SlackFishCNN_V1, SlackFishCNN_V2, SlackFishCNN_V5
-import featureEng
+
+def _cnn():
+    """The old CNN models' module (Models/Training/Models.py), imported on first use: it
+    pulls in torchvision and matplotlib (~1.2 s), which the NoFeat bots don't need."""
+    training = os.path.join(ROOT, "Models", "Training")
+    if training not in sys.path:
+        sys.path.insert(0, training)
+    import Models
+    return Models
+
+
+def _features():
+    """featureEng (the CNN models' hand-made features), imported on first use."""
+    _cnn()
+    import featureEng
+    return featureEng
 
 MATE_SCORE = 100_000
 piece_order = ['p', 'n', 'b', 'r', 'q', 'k', 'P', 'N', 'B', 'R', 'Q', 'K']
@@ -60,6 +72,7 @@ def to_2ch(a, b):
 # ---------------------------------------------------------------------------
 
 def encode_v1_v2(board: chess.Board):
+    featureEng = _features()
     fen = board.fen()
     features = np.array([
         featureEng.piece_count(fen),
@@ -74,6 +87,7 @@ def encode_v1_v2(board: chess.Board):
 
 
 def encode_v5(board: chess.Board):
+    featureEng = _features()
     fen = board.fen()
     planes = np.concatenate([
         piece_bitboards(board),
@@ -172,13 +186,13 @@ class NoFeatSpec:
 
 
 BOTS = {
-    "v1": BotSpec(lambda: SlackFishCNN_V1(11), encode_v1_v2,
+    "v1": BotSpec(lambda: _cnn().SlackFishCNN_V1(11), encode_v1_v2,
                   "Models/Weights/SlackFishCNN_V1_499",
                   "Models/Scalers/scaler_Y.pkl", "Models/Scalers/scaler_X.pkl"),
-    "v2": BotSpec(lambda: SlackFishCNN_V2(11), encode_v1_v2,
+    "v2": BotSpec(lambda: _cnn().SlackFishCNN_V2(11), encode_v1_v2,
                   "Models/Weights/SlackFishCNN_V2_449",
                   "Models/Scalers/scaler_Y.pkl", "Models/Scalers/scaler_X.pkl"),
-    "v5": BotSpec(lambda: SlackFishCNN_V5(24, 24), encode_v5,
+    "v5": BotSpec(lambda: _cnn().SlackFishCNN_V5(24, 24), encode_v5,
                   "Models/Weights/SlackFishCNN_V5_79",
                   "Models/Scalers/scaler_Y_9M.pkl", on_hf=False),
     "t1-3.25m": NoFeatSpec("Models/Weights/SlackFishV-T1-3.25M"),
@@ -201,6 +215,7 @@ class Evaluator:
     """Wraps a trained model. Scores are centipawns from White's perspective."""
 
     def __init__(self, spec: BotSpec, weights: str | None = None, device=None):
+        import joblib
         self.device = torch.device(device or ('cuda' if torch.cuda.is_available() else 'cpu'))
         self.encode = spec.encode
         self.scaler_x = joblib.load(os.path.join(ROOT, spec.scaler_x)) if spec.scaler_x else None
@@ -535,6 +550,25 @@ class Bot:
         self._can_time_out = False   # False until a timed search has a result to fall back on
         self.last_depth = None  # deepest iteration the last search finished
         self.last_search = None # (moves, scores, depth, move order) of that iteration, to resume from
+
+    def new_game(self, keep_cache=True):
+        """Forget everything from earlier games before starting another with this bot:
+        the transposition table (its scores can depend on the game's move history, e.g.
+        repetition draws), move-ordering history and killers, and pondered results. The
+        network-score cache is kept (scores depend only on the position) unless
+        keep_cache=False, for timing a search from cold."""
+        self.tt.clear()
+        self.history.clear()
+        self.killers.clear()
+        self.pondered.clear()
+        self.ponder_ranks = {}
+        self.ponder_searched = 0
+        self.last_ponder = None
+        self.last_pondered = False
+        self.last_search = None
+        self.last_depth = None
+        if not keep_cache:
+            self.cache.clear()
 
     def __str__(self):
         temp = f", temperature {self.temperature:g}" if self.temperature > 0 else ""

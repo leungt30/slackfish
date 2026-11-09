@@ -40,7 +40,7 @@ time instead: each move gets about 1/25 of what's left plus most
 of the increment, and it deepens until that's used (see Bot in bots.py: it stops
 early on a forced mate or a single legal move, and won't start a depth it isn't
 predicted to finish in the move's budget). Pondering is free for it, so it deepens
-the human's 5 likeliest replies together without a limit. If the human plays
+the human's 3 likeliest replies (PONDER_REPLIES in bots.py) together without a limit. If the human plays
 one it already searched to the bot's set depth, it replies at once without
 using its clock; otherwise its search starts from the deepest depth it reached.
 
@@ -67,7 +67,7 @@ import chess.pgn
 
 from bots import BOTS, ROOT, OpeningBook, SearchAborted, load_bot
 from export import game_gif, game_png
-from play import game_over
+from clock import flag_result, game_over, parse_clock as parse_spec
 
 HTML_PATH = os.path.join(os.path.dirname(__file__), "gui.html")
 BOOKS_DIR = os.path.join(ROOT, "Models", "Books")
@@ -226,9 +226,8 @@ class Game:
     def _result(self):
         """(result, reason) if the game is over, else (None, None)."""
         if self.flagged is not None:
-            if self.board.has_insufficient_material(not self.flagged):
-                return "1/2-1/2", "timeout vs insufficient material"
-            return ("0-1" if self.flagged == chess.WHITE else "1-0"), "timeout"
+            result = flag_result(self.board, self.flagged)
+            return result, "timeout vs insufficient material" if result == "1/2-1/2" else "timeout"
         if game_over(self.board):
             outcome = self.board.outcome(claim_draw=True)
             return outcome.result(), outcome.termination.name.replace("_", " ").lower()
@@ -251,7 +250,8 @@ class Game:
 
     def _budget(self, color, left=None):
         """Seconds a bot with a clock may think on this move: about 1/25 of its time
-        plus most of its increment, never more than half of what's left."""
+        plus most of its increment, never more than half of what's left. Separate from
+        the Lichess bot's budget (clock.move_budget, 1/12 of the clock plus the increment)."""
         left = self._clock_left(color) if left is None else left
         return min(left / 25 + 0.75 * self.clocks[color][1], left / 2)
 
@@ -438,8 +438,7 @@ def parse_clock(spec):
     """'5+3' (minutes + increment seconds) -> (300.0, 3.0); None / '' / 'none' -> None."""
     if not spec or str(spec).lower() == "none":
         return None
-    minutes, _, increment = str(spec).partition("+")
-    base, inc = float(minutes) * 60, float(increment or 0)
+    base, inc = parse_spec(spec)
     if not (0 < base <= 3 * 3600 and 0 <= inc <= 300):
         raise ValueError("clock must be 0-180 minutes + 0-300 seconds")
     return base, inc
@@ -449,8 +448,7 @@ def parse_bot_clock(spec):
     """'10' or '10+1' (seconds + increment seconds) -> (10.0, 1.0); None / '' / 'none' -> None."""
     if not spec or str(spec).lower() == "none":
         return None
-    seconds, _, increment = str(spec).partition("+")
-    base, inc = float(seconds), float(increment or 0)
+    base, inc = parse_spec(spec, unit=1.0)
     if not (0 < base <= 3 * 3600 and 0 <= inc <= 300):
         raise ValueError("bot clock must be 0-10800 seconds + 0-300 seconds")
     return base, inc

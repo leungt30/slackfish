@@ -22,8 +22,8 @@ Games: standard chess with a clock only, at most --max-games at a time (default
 Lichess shows the challenger, as are clocks without increment (1+0, 5+0), where the
 bot can flag (--allow-no-increment accepts them). The bot manages its Lichess clock like the GUI's
 bot clock (see Bot in bots.py), but more freely: about 1/12 of its time plus the
-increment per move, 1/20 under 3 minutes (--moves-left), searching by time with
-no depth limit. On the opponent's
+increment per move (--moves-left; the budget is in Engine/clock.py), searching by time
+with no depth limit. On the opponent's
 time it ponders their 3 likeliest replies, and if one is played after it was
 searched to the bot's depth (the :DEPTH in --bot), it moves instantly. With 7 pieces or
 fewer it plays the perfect move from Lichess's endgame tablebase instead of
@@ -46,7 +46,10 @@ declined "later", so a flaky connection can't start games it then loses on time 
 2026-11-07 DNS failures did that: games started in brief working windows, played
 their instant book moves, and flagged). A game abandoned for the connection ends the
 challenge series for the run. A rejected token (401: revoked) exits at once. Log
-lines start with the date and time.
+lines start with the date and time. Anything else that goes wrong in a game (a search
+error, an unexpected game state) never leaves it unplayed: a search that fails twice
+plays a legal move anyway, any other error re-reads the game and carries on, and a game
+where the search failed ends the challenge series.
 
 Every game is saved to logs/games/GAMEID.pgn when it ends (or is abandoned), with
 what the bot knew at each of its moves as a comment: its score (centipawns, White's
@@ -61,6 +64,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -68,13 +72,11 @@ import chess
 import chess.pgn
 import requests
 
-from bots import BOTS, PONDER_REPLIES, ROOT, OpeningBook, SearchAborted, load_bot
+from bots import BOTS, PONDER_REPLIES, ROOT, OpeningBook, load_bot
+from clock import MOVES_LEFT, MOVES_LEFT_BULLET, move_budget, moves_left_for, parse_clock, speed_of
 
 API = "https://lichess.org"
 TOKEN_FILE = os.path.join(ROOT, ".lichess_token")
-LAG = 0.3   # seconds kept back from each move's budget for the network round trip
-MOVES_LEFT = 12   # --moves-left for 3+ minute clocks (blitz games ended with 160-245 s unused at 25)
-MOVES_LEFT_BULLET = 12   # ... and under 3 minutes (1+1 games ended with ~44 s of 60 unused at 20)
 DRAW_OFFER_EVERY = 10   # plies between our draw offers, which we make when the tablebase says it's a draw
 DRAW_BELOW = 10   # accept a draw offer when our last eval is under this many centipawns (+0.10) for us
 TABLEBASE = "https://tablebase.lichess.ovh/standard"   # Lichess's free endgame tablebase (up to 7 pieces)
@@ -201,8 +203,8 @@ def tablebase_move(board, timeout):
 
 def ponder_note(last_ponder):
     """How the opponent's move compared with our pondering, for the move log (read by
-    Engine/ponderstats.py): ", ponder hit #2/5 at d4" (the 2nd likeliest reply, with
-    up to 5 pondered (--ponder-replies), pondered to depth 4), ", ponder miss: #7/5" (ranked 7th, not
+    Engine/ponderstats.py): ", ponder hit #2/3 at d4" (the 2nd likeliest reply, with
+    3 pondered (--ponder-replies), pondered to depth 4), ", ponder miss: #7/3" (ranked 7th, not
     searched), ", ponder miss: unranked" (not among the replies considered), or ""
     when there was no pondering."""
     if last_ponder is None:
@@ -215,11 +217,22 @@ def ponder_note(last_ponder):
     return f", ponder hit #{rank}/{searched} at d{depth}"
 
 
-def move_budget(left, increment, moves_left=MOVES_LEFT):
-    """Seconds to think on this move: 1/moves_left of the clock plus the increment,
-    minus network lag, never more than a third of what's left."""
-    left = max(0.0, left - LAG)
-    return min(left / moves_left + increment, left / 3)
+def fallback_move(board):
+    """A legal move without the neural network, for when the search fails: a mate in one if
+    there is one, else the most valuable capture, else the first legal move."""
+    values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0}
+    best, best_key = None, None
+    for move in board.legal_moves:
+        board.push(move)
+        mate = board.is_checkmate()
+        board.pop()
+        if mate:
+            return move
+        captured = board.piece_type_at(move.to_square) or (chess.PAWN if board.is_en_passant(move) else None)
+        key = values[captured] if captured else -1
+        if best_key is None or key > best_key:
+            best, best_key = move, key
+    return best
 
 
 class GamePlayer:
@@ -244,6 +257,7 @@ class GamePlayer:
         self.full, self.moves, self.clocks, self.notes = None, "", {}, {}
         self.saved = False   # whether save_pgn ran
         self.abandoned = False   # gave up on the connection: the game was most likely lost on time
+        self.search_failed = False   # a search failed twice and a fallback move was played
 
     def run(self):
         """Follow the game stream until the game ends, reconnecting if it drops: the
@@ -267,6 +281,16 @@ class GamePlayer:
                     print(f"[{self.game_id}] connection lost ({e}), reconnecting")
                     self.stop_ponder()
                     self.plies = -1   # handle the current position again once back
+                    attempt += 1
+                    time.sleep(min(attempt, 10))
+                except Exception as e:
+                    # Not the network: a bug or a GPU error. Never leave the game unplayed: read it
+                    # again from the stream and handle the current position afresh. Once the game is
+                    # over, the stream's first event says so and follow() returns True.
+                    print(f"[{self.game_id}] error ({e!r}), reading the game again")
+                    traceback.print_exc(file=sys.stdout)
+                    self.stop_ponder()
+                    self.plies = -1
                     attempt += 1
                     time.sleep(min(attempt, 10))
         finally:
@@ -294,8 +318,9 @@ class GamePlayer:
             self.ai_level = opponent.get("aiLevel")
             fen = full.get("initialFen", "startpos")
             self.start = chess.Board() if fen == "startpos" else chess.Board(fen)
-            base = (full.get("clock") or {}).get("initial", 180_000) / 1000
-            self.moves_left = self.args.moves_left or (MOVES_LEFT_BULLET if base < 180 else MOVES_LEFT)
+            clock = full.get("clock") or {}
+            self.moves_left = self.args.moves_left or moves_left_for(
+                (clock.get("initial", 180_000) / 1000, clock.get("increment", 2_000) / 1000))
             print(f"[{self.game_id}] {'White' if self.color == chess.WHITE else 'Black'} vs {self.opponent}"
                   f" ({full['speed']}, {'rated' if full['rated'] else 'casual'}): https://lichess.org/{self.game_id}")
         if not self.on_state(full["state"]):
@@ -352,15 +377,7 @@ class GamePlayer:
         if found:
             move, score, how = found
         else:
-            try:
-                move, score = self.bot.search(board, movetime=budget)
-            except SearchAborted:
-                return
-            except Exception as e:   # never stop playing over a search bug: retry once without pondered results
-                print(f"[{self.game_id}] search failed ({e!r}), searching again without pondered results")
-                self.bot.pondered.clear()
-                move, score = self.bot.search(board, movetime=max(0.2, budget - (time.monotonic() - start)))
-            how = "book" if self.bot.last_book else f"depth {self.bot.last_depth}{ponder_note(self.bot.last_ponder)}"
+            move, score, how = self.search(board, budget, start)
         if score is not None:
             self.score = score
         took = time.monotonic() - start
@@ -378,11 +395,35 @@ class GamePlayer:
         # This move's PGN comment, the log line with the score added (read by Engine/mine_hard.py),
         # e.g. "score +35, depth 6, ponder hit #2/3 at d4, 3.10s of 12.50s" or "score book, ..."
         try:
-            searched = not found and not self.bot.last_book
+            searched = score is not None and not found
             self.notes[plies - 1] = (move.uci(), f"score {f'{score:+.0f}, ' if searched else ''}"
                                                  f"{how}, {took:.2f}s of {budget:.2f}s")
         except Exception as e:   # a log must never stop play
             print(f"[{self.game_id}] couldn't note the move for the PGN ({e!r})")
+
+    def search(self, board, budget, start):
+        """(move, score, log note) from the bot's search. Never fails to give a move: a
+        failed search is tried once more without pondered results, and if that fails too
+        (e.g. a GPU error) a legal move is played anyway (score None) rather than none."""
+        for attempt in range(2):
+            try:
+                if attempt:
+                    self.bot.pondered.clear()
+                left = budget - (time.monotonic() - start)
+                move, score = self.bot.search(board, movetime=budget if attempt == 0 else max(0.2, left))
+                if move not in board.legal_moves:
+                    raise ValueError(f"search returned {move}, not a legal move")
+                how = ("book" if self.bot.last_book
+                       else f"depth {self.bot.last_depth}{ponder_note(self.bot.last_ponder)}")
+                return move, score, how
+            except Exception as e:
+                print(f"[{self.game_id}] search failed ({e!r})"
+                      + (", searching again without pondered results" if attempt == 0 else ""))
+                traceback.print_exc(file=sys.stdout)
+        self.search_failed = True
+        move = fallback_move(board)
+        print(f"[{self.game_id}] playing {board.san(move)} without a search")
+        return move, None, "fallback: search failed"
 
     def save_pgn(self, end):
         """Write the game to GAMES_DIR/GAMEID.pgn with our notes (see play) and the clocks
@@ -607,9 +648,10 @@ class BotRunner:
             del self.games[player.game_id]
             if player.result and player.game_id in self.challenged:
                 self.results[player.result[1]].append(player.result[0])
-            if player.abandoned and self.opponents and not self.halted:
-                # Don't start more games on a connection that just cost one
-                self.halted = f"lost the connection during game {player.game_id}"
+            if (player.abandoned or player.search_failed) and self.opponents and not self.halted:
+                # Don't start more games on a connection, or a GPU, that just cost one
+                self.halted = (f"lost the connection during game {player.game_id}" if player.abandoned
+                               else f"the search failed during game {player.game_id}")
                 print(f"stopping the challenge series: {self.halted}. Restart it once the network is stable.")
 
     def challenge_when_idle(self):
@@ -694,13 +736,6 @@ class BotRunner:
             print(f"  {name}: {sum(s):g}/{len(s)}  (+{s.count(1.0)} ={s.count(0.5)} -{s.count(0.0)})")
 
 
-def speed_of(clock):
-    """Lichess's speed for a clock: estimated seconds a side, base + 40 x increment."""
-    base, inc = clock
-    est = base + 40 * inc
-    return "ultraBullet" if est < 30 else "bullet" if est < 180 else "blitz" if est < 480 else "rapid" if est < 1500 else "classical"
-
-
 def find_opponents(li, clock, rating, count=20, exclude=()):
     """Online bots rated within rating (low, high) at clock's speed, with 50+ games and an
     established rating, strongest first: names for --challenge."""
@@ -732,11 +767,6 @@ def parse_bot(spec):
     if name not in BOTS:
         raise argparse.ArgumentTypeError(f"unknown bot {name!r}; available: {', '.join(BOTS)}")
     return name, int(depth or 3)
-
-
-def parse_clock(spec):
-    minutes, _, inc = spec.partition("+")
-    return float(minutes) * 60, float(inc or 0)
 
 
 class Timestamped:
@@ -786,7 +816,7 @@ def main():
                    help="search endgames too, instead of asking Lichess's tablebase with 7 pieces or fewer")
     p.add_argument("--moves-left", type=float,
                    help=f"think 1/N of the remaining clock (plus the increment) per move; higher = faster "
-                        f"(default: {MOVES_LEFT_BULLET} for clocks under 3 minutes, else {MOVES_LEFT})")
+                        f"(default: {MOVES_LEFT_BULLET} for bullet clocks, else {MOVES_LEFT})")
     p.add_argument("--device", help="cpu or cuda (default: cuda if available)")
     p.add_argument("--stockfish", type=lambda s: [int(x) for x in s.split(",")],
                    help="challenge the Lichess AI at these levels (1-8, e.g. 2,3,4) when idle")

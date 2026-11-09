@@ -17,8 +17,8 @@ time, never a loss on time: the bot plays the deepest finished one.)
    Lichess bot searches, through every depth up to --max-depth with no time limit, and
    the seconds per depth are recorded. Prints the growth from one depth to the next.
 2. Simulate: for each time budget (seconds per move; Engine/lichess.py spends about
-   1/12 of the clock plus the increment, 1/20 under 3 minutes: 17 s at 3:00 left,
-   ~4 s at 1:00 in bullet), replays the bot's decisions on those timings with the
+   1/12 of the clock plus the increment (Engine/clock.py): ~17 s at 3:00 left in blitz,
+   ~6 s at 1:00 in bullet), replays the bot's decisions on those timings with the
    current GROWTH floors and each --floors alternative. Reports how often each depth
    is reached, the average depth and time used, and how often a started depth would
    be cut off at the deadline.
@@ -58,11 +58,7 @@ def measure(args):
     fens = load_positions(args.positions)[:args.limit]
     out = []
     for fen in fens:
-        bot.cache.clear()
-        bot.tt.clear()
-        bot.pondered.clear()
-        bot.history.clear()
-        bot.last_search = None
+        bot.new_game(keep_cache=False)   # each position searched from cold
         board = chess.Board(fen)
         # Timed mode (every depth gets the root margin) but no deadline, so no depth is skipped
         bot.root_scores(board, margin=0.0, max_depth=args.max_depth)
