@@ -39,6 +39,15 @@ a row, or don't answer within a minute twice, are dropped. Friends' challenges
 are still accepted between games. When the list is done it prints the score per
 opponent and stays online for challenges.
 
+Network trouble: a game whose connection drops keeps reconnecting for as long as it
+could still be going (our clock, plus GIVE_UP_MARGIN). After any connection error it
+starts no game for NETWORK_QUIET seconds (5 min): no challenges, and incoming ones
+declined "later", so a flaky connection can't start games it then loses on time (on
+2026-11-07 DNS failures did that: games started in brief working windows, played
+their instant book moves, and flagged). A game abandoned for the connection ends the
+challenge series for the run. A rejected token (401: revoked) exits at once. Log
+lines start with the date and time.
+
 Every game is saved to logs/games/GAMEID.pgn when it ends (or is abandoned), with
 what the bot knew at each of its moves as a comment: its score (centipawns, White's
 point of view, or book / tablebase), depth, ponder result, seconds used and the clock.
@@ -49,6 +58,7 @@ import faulthandler
 import signal
 import json
 import os
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -72,6 +82,8 @@ TABLEBASE_PIECES = 7
 # Control files (scripts/lichess-bot.sh pause / resume / stop): checked twice a second
 PAUSE_FILE = os.path.join(ROOT, "logs", "lichess.pause")   # finish games in progress, then start none
 STOP_FILE = os.path.join(ROOT, "logs", "lichess.stop")     # ... and exit once none is in progress
+NETWORK_QUIET = 300   # seconds without a connection error before challenging or accepting a game
+GIVE_UP_MARGIN = 120   # keep reconnecting to a game this long past our clock running out
 GAMES_DIR = os.path.join(ROOT, "logs", "games")   # one PGN per game, for Engine/mine_hard.py
 
 
@@ -90,14 +102,32 @@ class Lichess:
     def __init__(self, token):
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {token}"
+        self.last_error = None   # time.monotonic() of the last failed connection
+
+    def quiet_for(self):
+        """Seconds since the last connection error (inf if none yet)."""
+        return float("inf") if self.last_error is None else time.monotonic() - self.last_error
+
+    def _request(self, method, path, **kwargs):
+        """One request: records connection errors (see quiet_for) and exits on 401."""
+        try:
+            r = self.session.request(method, API + path, **kwargs)
+        except (requests.ConnectionError, requests.Timeout):
+            self.last_error = time.monotonic()
+            raise
+        if r.status_code == 401:
+            # The token was revoked or is wrong: nothing can work, so stop rather than retry forever
+            print(f"Lichess rejected the token (401 on {path}): revoked or wrong. Exiting.", flush=True)
+            os._exit(1)
+        return r
 
     def get(self, path):
-        r = self.session.get(API + path, timeout=30)
+        r = self._request("GET", path, timeout=30)
         r.raise_for_status()
         return r.json()
 
     def get_ndjson(self, path, params=None):
-        r = self.session.get(API + path, params=params, headers={"Accept": "application/x-ndjson"}, timeout=30)
+        r = self._request("GET", path, params=params, headers={"Accept": "application/x-ndjson"}, timeout=30)
         r.raise_for_status()
         return [json.loads(line) for line in r.text.splitlines() if line.strip()]
 
@@ -107,7 +137,7 @@ class Lichess:
         unsent move would otherwise lose on time) and waiting out rate limits."""
         for attempt in range(6):
             try:
-                r = self.session.post(API + path, data=data, timeout=15)
+                r = self._request("POST", path, data=data, timeout=15)
             except (requests.ConnectionError, requests.Timeout) as e:
                 if attempt == 5:
                     raise
@@ -128,10 +158,14 @@ class Lichess:
     def stream(self, path):
         """Yield each event of an ndjson stream, or None for Lichess's blank
         keep-alive lines (every few seconds), so a reader can check for stopping."""
-        with self.session.get(API + path, stream=True, timeout=(30, 90)) as r:
+        with self._request("GET", path, stream=True, timeout=(30, 90)) as r:
             r.raise_for_status()
-            for line in r.iter_lines():
-                yield json.loads(line) if line else None
+            try:
+                for line in r.iter_lines():
+                    yield json.loads(line) if line else None
+            except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError):
+                self.last_error = time.monotonic()   # dropped mid-stream
+                raise
 
 
 def tablebase_move(board, timeout):
@@ -209,31 +243,49 @@ class GamePlayer:
         # (wtime, btime) in ms by number of moves played, and our notes by ply: (uci, comment)
         self.full, self.moves, self.clocks, self.notes = None, "", {}, {}
         self.saved = False   # whether save_pgn ran
+        self.abandoned = False   # gave up on the connection: the game was most likely lost on time
 
     def run(self):
         """Follow the game stream until the game ends, reconnecting if it drops: the
         first event after (re)connecting is the full current state, so a move that
-        never got through is searched and sent again."""
+        never got through is searched and sent again. Keeps trying for as long as the
+        game could still be going (our clock, plus 2 minutes), then gives up."""
+        self.outage = None   # time.monotonic() when the current run of failures began
+        attempt = 0
         try:
-            for attempt in range(30):
+            while True:
                 try:
-                    if self.follow(first=attempt == 0):
+                    if self.follow(first=self.full is None):
                         return
                 except requests.RequestException as e:
+                    now = time.monotonic()
+                    self.outage = self.outage or now
+                    if now - self.outage > self.time_left() + GIVE_UP_MARGIN:
+                        print(f"[{self.game_id}] giving up: no connection for {now - self.outage:.0f} s")
+                        self.abandoned = True
+                        return
                     print(f"[{self.game_id}] connection lost ({e}), reconnecting")
                     self.stop_ponder()
                     self.plies = -1   # handle the current position again once back
-                    time.sleep(min(1 + attempt, 10))
-            print(f"[{self.game_id}] giving up after repeated connection failures")
+                    attempt += 1
+                    time.sleep(min(attempt, 10))
         finally:
             self.stop_ponder()
             if not self.saved:   # ended abnormally: save what we have, result "*"
                 self.save_pgn(None)
 
+    def time_left(self):
+        """Seconds on our clock at the last update (10 minutes if none yet)."""
+        if not self.clocks or self.full is None:
+            return 600
+        wtime, btime = self.clocks[max(self.clocks)]
+        return (wtime if self.color == chess.WHITE else btime) / 1000
+
     def follow(self, first):
         """Read the game stream; True once the game is over."""
         stream = self.li.stream(f"/api/bot/game/stream/{self.game_id}")
         full = next(e for e in stream if e)
+        self.outage = None   # connected again
         if first:
             self.full = full
             self.color = chess.WHITE if full["white"].get("id") == self.me else chess.BLACK
@@ -422,6 +474,8 @@ class BotRunner:
         self.challenged = set()            # game ids from our own challenges
         self.started = 0                   # our challenges that became games
         self.results = defaultdict(list)   # opponent name -> our scores, from our own challenges
+        self.stream_up = False             # the event stream is connected
+        self.halted = None                 # why the challenge series stopped early, if it did
         print(f"Logged in as {account['username']}: https://lichess.org/@/{account['username']}")
 
     def run(self):
@@ -438,9 +492,11 @@ class BotRunner:
         while True:
             try:
                 for event in self.li.stream("/api/stream/event"):
+                    self.stream_up = True
                     if event:
                         self.on_event(event)
             except requests.RequestException as e:
+                self.stream_up = False
                 print(f"event stream dropped ({e}), reconnecting")
                 time.sleep(5)
 
@@ -516,6 +572,8 @@ class BotRunner:
             return "later"
         if os.path.exists(PAUSE_FILE) or os.path.exists(STOP_FILE):
             return "later"
+        if self.li.quiet_for() < NETWORK_QUIET:   # a game started now could be lost on time
+            return "later"
         return None
 
     def watch_controls(self):
@@ -549,14 +607,27 @@ class BotRunner:
             del self.games[player.game_id]
             if player.result and player.game_id in self.challenged:
                 self.results[player.result[1]].append(player.result[0])
+            if player.abandoned and self.opponents and not self.halted:
+                # Don't start more games on a connection that just cost one
+                self.halted = f"lost the connection during game {player.game_id}"
+                print(f"stopping the challenge series: {self.halted}. Restart it once the network is stable.")
 
     def challenge_when_idle(self):
         a = self.args
         if not self.opponents:
             return
         base, inc = a.clock
+        holding = False   # printed that we're waiting for a stable connection
         while True:
             opponent = None
+            if self.halted:
+                self.report()
+                return
+            unstable = self.li.quiet_for() < NETWORK_QUIET or not self.stream_up
+            if unstable != holding:
+                holding = unstable
+                print(f"connection unstable: no new challenges until {NETWORK_QUIET // 60} minutes without errors"
+                      if unstable else "connection stable again: resuming challenges")
             with self.lock:
                 if self.pending and time.monotonic() - self.pending[2] > 60:   # no answer: offline or ignoring us
                     stale, self.pending = self.pending, None
@@ -573,7 +644,8 @@ class BotRunner:
                     if time.monotonic() - at > 60:
                         del self.accepted[cid]
                 held = os.path.exists(PAUSE_FILE) or os.path.exists(STOP_FILE)
-                if not held and not self.games and not self.accepted and not self.pending and self.started < a.games:
+                if (not held and not unstable and not self.games and not self.accepted and not self.pending
+                        and self.started < a.games):
                     while self.refusals[self.opponents[self.turn % len(self.opponents)]] >= 2:
                         self.turn += 1
                     opponent = self.opponents[self.turn % len(self.opponents)]
@@ -667,6 +739,25 @@ def parse_clock(spec):
     return float(minutes) * 60, float(inc or 0)
 
 
+class Timestamped:
+    """stdout with the time at the start of each line (the log had none)."""
+
+    def __init__(self, out):
+        self.out, self.line_start, self.lock = out, True, threading.Lock()
+
+    def write(self, text):
+        with self.lock:
+            for part in text.splitlines(keepends=True):
+                if self.line_start:
+                    self.out.write(time.strftime("%m-%d %H:%M:%S "))
+                self.out.write(part)
+                self.line_start = part.endswith("\n")
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self.out, name)
+
+
 def main():
     faulthandler.register(signal.SIGUSR1, all_threads=True)   # kill -USR1 PID: every thread's stack to stderr (the log)
     parser = argparse.ArgumentParser(description="Run SlackFish as a Lichess bot.",
@@ -740,6 +831,7 @@ def main():
         return
     if args.stockfish and not all(1 <= level <= 8 for level in args.stockfish):
         raise SystemExit("--stockfish levels are 1-8")
+    sys.stdout = Timestamped(sys.stdout)
     runner = BotRunner(li, args)
     try:
         runner.run()

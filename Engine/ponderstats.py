@@ -31,8 +31,8 @@ from collections import Counter, defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOGS = [os.path.join(ROOT, "logs", "lichess-history.out"), os.path.join(ROOT, "logs", "lichess.out")]
-GAME = re.compile(r"^\[(\w{8})\] (?:White|Black) vs \S+ \((\w+),")
-MOVE = re.compile(r"^\[(\w{8})\] \d+\.+\S+\s+\(depth (\d+), ponder (hit|miss):? (?:#(\d+)/(\d+)(?: at d(\d+))?|unranked), "
+GAME = re.compile(r"^(?:[\d-]+ [\d:]+ )?\[(\w{8})\] (?:White|Black) vs \S+ \((\w+),")
+MOVE = re.compile(r"^(?:[\d-]+ [\d:]+ )?\[(\w{8})\] \d+\.+\S+\s+\(depth (\d+), ponder (hit|miss):? (?:#(\d+)/(\d+)(?: at d(\d+))?|unranked), "
                   r"([\d.]+)s of")
 
 
