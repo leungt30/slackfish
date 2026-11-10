@@ -497,8 +497,7 @@ class BotRunner:
         self.me = account["id"]
         if account.get("title") != "BOT":
             raise SystemExit(f"{account['username']} isn't a BOT account yet: run `lichess.py upgrade` first")
-        self.book = (open_books([os.path.join(ROOT, "Models", "Books", name) for name in args.book.split(",")],
-                                max_plies=args.book_plies) if args.book else None)
+        self.book = self.open_book()
         self.lock = threading.Lock()
         self.games = {}   # game id -> GamePlayer
         if args.challenge == ["auto"]:   # online bots rated --opponent-rating at this clock's speed
@@ -585,7 +584,7 @@ class BotRunner:
             if game_id in self.games:
                 return
             self.accepted.pop(game_id, None)   # a challenge's game has its id
-            player = GamePlayer(self.li, game_id, self.me, self.args, self.book)
+            player = GamePlayer(self.li, game_id, self.me, self.args, self.open_book())
             self.games[game_id] = player
             if self.pending and self.pending[0] == game_id:
                 self.refusals[self.pending[1]] = 0
@@ -593,6 +592,14 @@ class BotRunner:
                 self.challenged.add(game_id)
                 self.started += 1
         threading.Thread(target=self.play, args=(player,), daemon=True).start()
+
+    def open_book(self):
+        """The opening book(s), opened afresh for each game so a book file rewritten while the bot runs
+        (see Engine/make_book.py; write to a temp file and rename) is used from the next game on."""
+        if not self.args.book:
+            return None
+        return open_books([os.path.join(ROOT, "Models", "Books", name) for name in self.args.book.split(",")],
+                          max_plies=self.args.book_plies)
 
     def decline_reason(self, c):
         """A Lichess decline reason key, or None to accept. Called with self.lock held."""

@@ -16,6 +16,7 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPPONENT, GAMES, OUT, *PREFIX = sys.argv[1:]
 SECS, MAX_PLY, MIN_N, MAX_NODES = (int(os.environ.get(k, d)) for k, d in (("SECS", 30), ("MAX_PLY", 16), ("MIN_N", 4), ("MAX_NODES", 120)))
+SHARE = float(os.environ.get("SHARE", 0.08))   # an opponent move is followed if played in at least this share of the games
 games = [json.loads(l) for l in open(GAMES)]
 nm = lambda g, c: g["players"][c].get("user", {}).get("name")
 theirs = {"white": collections.defaultdict(collections.Counter), "black": collections.defaultdict(collections.Counter)}
@@ -43,7 +44,7 @@ def walk(b, c):   # c = the opponent's colour
         if not cnt: return
         tot = sum(cnt.values())
         for u, n in cnt.most_common():
-            if n >= MIN_N and n >= 0.08 * tot:
+            if n >= MIN_N and n >= SHARE * tot:
                 b.push_uci(u); walk(b, c); b.pop()
         return
     es = list(book.find_all(b))
