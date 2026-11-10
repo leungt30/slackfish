@@ -2,10 +2,11 @@
 
     curl -H "Authorization: Bearer $(cat .lichess_token)" -H "Accept: application/x-ndjson" \\
          "https://lichess.org/api/games/user/NAME?max=400&moves=true&rated=true" -o NAME.ndjson
-    nice -n 19 python Engine/prep_opponent.py NAME NAME.ndjson NAME-lines.jsonl
+    nice -n 19 python Engine/prep_opponent.py NAME NAME.ndjson NAME-lines.jsonl [d2d4 ...]
     python Engine/make_book.py NAME-lines.jsonl Models/Books/NAME.bin
 
-Walks the tree of positions for each colour the opponent played.
+Walks the tree of positions for each colour the opponent played. Extra arguments are UCI moves
+played from the start (e.g. d2d4): only that opening is walked, with the opponent's colour implied.
 For each colour we play: walk the tree of positions. Their moves branch on what they actually played
 (>= MIN_N games and >= 8% of that position). Our moves: Cerebellum's top move if it has the position,
 else Stockfish's best (MultiPV 2, SECS each). Writes bonga_prep.jsonl (one analysed position per line)."""
@@ -13,7 +14,7 @@ import collections, json, shutil, sys, time
 import chess, chess.engine, chess.polyglot
 import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OPPONENT, GAMES, OUT = sys.argv[1:4]
+OPPONENT, GAMES, OUT, *PREFIX = sys.argv[1:]
 SECS, MAX_PLY, MIN_N, MAX_NODES = 30, 16, 4, 120
 games = [json.loads(l) for l in open(GAMES)]
 nm = lambda g, c: g["players"][c].get("user", {}).get("name")
@@ -59,7 +60,15 @@ def walk(b, c):   # c = the opponent's colour
         out.write(json.dumps(rec) + "\n"); out.flush()
         log(f"#{n_an} {len(b.move_stack)}p {rec['us']} plays {rec['best']} ({rec['cp_white']:+d}cp white, d{rec['depth']})")
     b.push(mv); walk(b, c); b.pop()
-for c in ("white", "black"):
-    log("tree:", OPPONENT, "plays", c); walk(chess.Board(), c)
+if PREFIX:
+    start = chess.Board()
+    for u in PREFIX:
+        start.push_uci(u)
+    c = "black" if len(PREFIX) % 2 else "white"   # the opponent moves next
+    log("tree:", OPPONENT, "plays", c, "after", " ".join(PREFIX))
+    walk(start, c)
+else:
+    for c in ("white", "black"):
+        log("tree:", OPPONENT, "plays", c); walk(chess.Board(), c)
 eng.quit()
 log(f"done: {n_an} positions analysed in {(time.time()-t0)/60:.0f} min")

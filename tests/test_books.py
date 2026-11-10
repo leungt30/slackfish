@@ -84,6 +84,10 @@ class BookTest(unittest.TestCase):
         for u in "e2e4 e7e5 e1e2".split():
             board.push_uci(u)
         self.assertEqual(book.pick(board, self.rng), chess.Move.from_uci("g8f6"))
+        board = chess.Board()
+        for u in "d2d4 e7e5 d4e5 e8e7".split():   # 1.d4 e5 2.dxe5 Ke7
+            board.push_uci(u)
+        self.assertTrue(book.covers(board))
         lines = [json.loads(line) for line in open(os.path.join(ROOT, "Models", "Books", "bongaclang-lines.jsonl"))]
         self.assertEqual(build(lines), open(path, "rb").read())   # the book is what the lines file says
 
