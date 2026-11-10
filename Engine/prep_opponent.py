@@ -15,7 +15,7 @@ import chess, chess.engine, chess.polyglot
 import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPPONENT, GAMES, OUT, *PREFIX = sys.argv[1:]
-SECS, MAX_PLY, MIN_N, MAX_NODES = 30, 16, 4, 120
+SECS, MAX_PLY, MIN_N, MAX_NODES = (int(os.environ.get(k, d)) for k, d in (("SECS", 30), ("MAX_PLY", 16), ("MIN_N", 4), ("MAX_NODES", 120)))
 games = [json.loads(l) for l in open(GAMES)]
 nm = lambda g, c: g["players"][c].get("user", {}).get("name")
 theirs = {"white": collections.defaultdict(collections.Counter), "black": collections.defaultdict(collections.Counter)}

@@ -88,6 +88,11 @@ class BookTest(unittest.TestCase):
         for u in "d2d4 e7e5 d4e5 e8e7".split():   # 1.d4 e5 2.dxe5 Ke7
             board.push_uci(u)
         self.assertTrue(book.covers(board))
+        for line in ("e2e4 c7c5 e1e2", "e2e4 e7e5 e1e2 g8f6 d2d3 d7d5 b1c3 c8g4 g1f3 b8c6 h2h3 g4f3 g2f3 d5d4 c3b1 f6h5 h3h4"):
+            board = chess.Board()
+            for u in line.split():
+                board.push_uci(u)
+            self.assertTrue(book.covers(board), line)   # the Sicilian Bongcloud and our Black book past move 8
         lines = [json.loads(line) for line in open(os.path.join(ROOT, "Models", "Books", "bongaclang-lines.jsonl"))]
         self.assertEqual(build(lines), open(path, "rb").read())   # the book is what the lines file says
 
