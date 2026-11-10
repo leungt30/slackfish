@@ -72,7 +72,7 @@ import chess
 import chess.pgn
 import requests
 
-from bots import BOTS, PONDER_REPLIES, ROOT, OpeningBook, load_bot
+from bots import BOTS, PONDER_REPLIES, ROOT, load_bot, open_books
 from clock import MOVES_LEFT, MOVES_LEFT_BULLET, move_budget, moves_left_for, parse_clock, speed_of
 
 API = "https://lichess.org"
@@ -497,8 +497,8 @@ class BotRunner:
         self.me = account["id"]
         if account.get("title") != "BOT":
             raise SystemExit(f"{account['username']} isn't a BOT account yet: run `lichess.py upgrade` first")
-        self.book = (OpeningBook(os.path.join(ROOT, "Models", "Books", args.book), max_plies=args.book_plies)
-                     if args.book else None)
+        self.book = (open_books([os.path.join(ROOT, "Models", "Books", name) for name in args.book.split(",")],
+                                max_plies=args.book_plies) if args.book else None)
         self.lock = threading.Lock()
         self.games = {}   # game id -> GamePlayer
         if args.challenge == ["auto"]:   # online bots rated --opponent-rating at this clock's speed
@@ -824,7 +824,7 @@ def main():
     p = sub.add_parser("play", help="go online: accept challenges, optionally play the Lichess AI")
     p.add_argument("--bot", type=parse_bot, default=("t3-sg64-muon-lichessgames-16.0m", 3),
                    help="NAME[:DEPTH]; DEPTH is when a pondered reply is played at once (default t3-sg64-muon-lichessgames-16.0m:3)")
-    p.add_argument("--book", nargs="?", const="gm2001.bin", help="opening book in Models/Books (default with no name: gm2001.bin)")
+    p.add_argument("--book", nargs="?", const="gm2001.bin", help="opening book in Models/Books (default with no name: gm2001.bin); NAME,NAME,... layers books, the first with a move for the position plays it")
     p.add_argument("--book-plies", type=int, default=16,
                    help="leave the book after this many plies at most (default 16; deep engine books like Cerebellum go 30+)")
     p.add_argument("--max-games", type=int, default=1, help="games at once (default 1)")

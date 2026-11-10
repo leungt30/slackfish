@@ -121,8 +121,8 @@ cd "$(dirname "$0")/.."   # run from the repo root, wherever the script is calle
 LOG=logs/lichess.out
 PIDFILE=logs/lichess.pid
 # Opening book: Cerebellum (strong, downloaded separately, see README) or the bundled gm2001
-BOOK=Cerebellum3Merge.bin
-[ -f "Models/Books/$BOOK" ] || BOOK=gm2001.bin
+BOOK=bongaclang.bin,Cerebellum3Merge.bin   # prepared lines first, then the general book
+[ -f "Models/Books/Cerebellum3Merge.bin" ] || BOOK=bongaclang.bin,gm2001.bin
 # Model and depth: NAME:DEPTH. The search is timed with no depth limit; DEPTH is how
 # deep a pondered reply must have been searched to be played without thinking more.
 DEFAULTS=(--bot t3-sg64-muon-lichessgames-16.0m:6 --book "$BOOK" --book-plies 30)

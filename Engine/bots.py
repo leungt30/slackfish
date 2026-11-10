@@ -408,6 +408,34 @@ class OpeningBook:
         return entries[rng.choice(len(entries), p=weights / weights.sum())].move
 
 
+class LayeredBook:
+    """Several opening books in priority order: the first that has a move for the position
+    plays it (a small prepared book can sit in front of a big general one). Same interface
+    as OpeningBook."""
+
+    def __init__(self, books: list):
+        self.books = books
+
+    def __str__(self):
+        return " > ".join(str(b) for b in self.books)
+
+    def _first(self, board: chess.Board):
+        return next((b for b in self.books if b.covers(board)), None)
+
+    def covers(self, board: chess.Board) -> bool:
+        return self._first(board) is not None
+
+    def pick(self, board: chess.Board, rng: np.random.Generator) -> chess.Move | None:
+        book = self._first(board)
+        return book.pick(board, rng) if book else None
+
+
+def open_books(paths: list[str], max_plies: int = 16):
+    """One OpeningBook for a single path, a LayeredBook (first path has priority) for several."""
+    books = [OpeningBook(p, max_plies=max_plies) for p in paths]
+    return books[0] if len(books) == 1 else LayeredBook(books)
+
+
 class SearchAborted(Exception):
     """Raised inside a search that was told to stop (see Bot.search and Ponder)."""
 
