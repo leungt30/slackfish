@@ -27,13 +27,15 @@ deepmind:270M:fp32 runs it in full precision (same moves, slower). It's GPU-boun
 Bot against bot at equal time instead of equal depth (--bot-movetime: both search for that
 many seconds per move), for changes that trade evaluation quality for speed; --weights /
 --opponent-weights play a model file (best.pt or model.safetensors) under a NoFeat bot's
-name without registering it; --gpus spreads the workers over several GPUs, which also
-keeps timed searches from slowing each other down on a shared GPU:
+name without registering it; --gpus spreads the workers (and DeepMind's model) over several
+GPUs, which also keeps timed searches from slowing each other down on a shared GPU; --log
+appends each game to a JSONL file as it finishes, so a long match can be stopped at any time:
 
     uv run python Engine/match.py t3-sg64-muon-lichessgames3m-16.0m t3-sg64-muon-lichessgames3m-16.0m \\
         --weights runs/new/best.pt --bot-movetime 0.5 --openings 128 --workers 16 --gpus 4
 """
 import argparse
+import json
 import math
 import multiprocessing as mp
 import os
@@ -80,8 +82,10 @@ def init_worker(args):
     if args.stockfish_levels:
         _opponent = chess.engine.SimpleEngine.popen_uci(args.stockfish)
     elif args.opponent.startswith("deepmind:"):
+        # JAX runs on the first GPU it sees: give each worker's model its own GPU too
+        env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(worker % args.gpus)} if args.gpus > 1 else None
         _opponent = chess.engine.SimpleEngine.popen_uci(deepmind_command(args.opponent.split(":", 1)[1]),
-                                                       timeout=300)   # loading and compiling the model
+                                                       timeout=300, env=env)   # loading and compiling the model
         _opponent.ping()   # isready loads the model: do it now, not on its first move's clock
     else:
         _opponent = load_bot(args.opponent, depth=args.opponent_depth or args.depth, weights=args.opponent_weights,
@@ -102,7 +106,12 @@ def deepmind_command(spec):
 
 
 def play(task):
-    """One game. Returns (level or None, bot's score)."""
+    """One game. Returns (level or None, bot's score, opening EPD, bot played white)."""
+    level, result = _play(task)
+    return level, result, task[0].epd(), task[1]
+
+
+def _play(task):
     opening, bot_white, level, movetime, clock = task
     board = opening.copy()
     for player in (_bot, _opponent):   # each game starts fresh: no search state from the last one
@@ -163,6 +172,7 @@ def main():
     parser.add_argument("--clock", help="bot vs bot (or DeepMind) on a clock, MINUTES+INCREMENT seconds (e.g. 3+2 for blitz); "
                         "each move's budget is slackfish-bot's Lichess one, no pondering")
     parser.add_argument("--gpus", type=int, default=1, help="spread the workers over this many GPUs (default 1)")
+    parser.add_argument("--log", help="append each finished game to this JSONL file (opening, bot colour, level, score)")
     parser.add_argument("--hours", type=float,
                         help="stop after this long and report the games finished (games in progress are dropped)")
     args = parser.parse_args()
@@ -193,7 +203,11 @@ def main():
             except mp.TimeoutError:
                 print(f"  time limit ({args.hours:g} h): stopping after {len(results)} games", flush=True)
                 break
-            results.append(result)
+            level, result, epd, bot_white = result
+            results.append((level, result))
+            if args.log:
+                with open(args.log, "a") as f:
+                    f.write(json.dumps(dict(opening=epd, bot_white=bot_white, level=level, score=result)) + "\n")
             if args.hours or i % 10 == 0 or i == len(tasks):
                 print(f"  {i}/{len(tasks)} games, score {sum(s for _, s in results):g}", flush=True)
     if not results:
