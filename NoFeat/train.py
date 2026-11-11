@@ -144,7 +144,10 @@ def parse_args():
     p.add_argument("--save-every", type=int, default=1000,
                    help="also write last.pt every N steps within an epoch (0 = only at epoch end)")
     p.add_argument("--resume", help="checkpoint to continue from")
-    p.add_argument("--wandb", action="store_true", help="log to Weights & Biases")
+    p.add_argument("--wandb", action="store_true",
+                   help="log to Weights & Biases (run named after --out; a --resume into the same --out "
+                        "continues the same wandb run)")
+    p.add_argument("--wandb-project", default="slackfish-nofeat")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
@@ -524,9 +527,19 @@ def main():
             log(f"Resumed from {args.resume} (after epoch {ckpt['epoch']})")
 
     args.wandb = args.wandb and rank == 0
+    wandb_id = None
     if args.wandb:
         import wandb
-        wandb.init(project="slackfish-nofeat", config=vars(args))
+        # Resuming into the same --out continues its wandb run; a new --out (e.g. a longer run
+        # branched from a snapshot) starts a new one. The x-axis is the global training step.
+        same_run = args.resume and os.path.normpath(ckpt["args"]["out"]) == os.path.normpath(args.out)
+        wandb_id = wandb.init(project=args.wandb_project, name=os.path.basename(os.path.normpath(args.out)),
+                              id=ckpt.get("wandb_id") if same_run else None, resume="allow",
+                              config={**vars(args), "parameters": sum(p.numel() for p in model.parameters()),
+                                      "train_positions": train_count, "steps_per_epoch": steps_per_epoch,
+                                      "gpus": world}).id
+        wandb.define_metric("global_step")
+        wandb.define_metric("*", step_metric="global_step")
 
     def checkpoint(epoch, step=None):
         return {
@@ -547,6 +560,7 @@ def main():
             "curve": curve,   # --val-every points
             "args": vars(args),
             "train_positions": train_count,   # checked on --resume, with ORDER_ARGS
+            "wandb_id": wandb_id,
         }
 
     def save(ckpt, name):   # write then rename, so a crash mid-save can't corrupt the file
@@ -573,6 +587,7 @@ def main():
                 swap[i:i + CHUNK] = torch.rand(len(swap[i:i + CHUNK]), generator=shuffle) < args.augment_prob
         first = start_step if epoch == start_epoch else 0
         running, t0 = 0.0, time.time()
+        t_log, step_log = t0, first
         bar = tqdm(range(first, steps_per_epoch), desc=f"epoch {epoch}/{args.epochs}",
                    initial=first, total=steps_per_epoch, disable=rank != 0)
         for step in bar:
@@ -602,7 +617,7 @@ def main():
             scaler.scale(loss).backward()
             for o in optimizers:
                 scaler.unscale_(o)   # clip the real gradients, not the scaled ones
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             for o in optimizers:
                 scaler.step(o)   # skipped if fp16 gradients overflowed
             scaler.update()
@@ -617,7 +632,12 @@ def main():
             if step % 50 == 0:
                 bar.set_postfix(loss=f"{running:.4f}", lr=f"{scheduler.get_last_lr()[0]:.1e}")
                 if args.wandb:
-                    wandb.log({"train_loss": running, "lr": scheduler.get_last_lr()[0]})
+                    now, speed = time.time(), {}
+                    if step > step_log:
+                        speed = {"positions_per_s": (step - step_log) * args.batch_size / (now - t_log)}
+                    wandb.log({"global_step": (epoch - 1) * steps_per_epoch + step, "epoch_frac": epoch - 1 + step / steps_per_epoch,
+                               "train_loss": running, "lr": scheduler.get_last_lr()[0], "grad_norm": grad_norm.item(), **speed})
+                    t_log, step_log = now, step
             if args.val_every and (step + 1) % args.val_every == 0 and step + 1 < steps_per_epoch:
                 sq_err, cp_err = val_metrics(*validate(val_subset), args)
                 sub_source = source[val_subset]
@@ -631,7 +651,10 @@ def main():
                                f"MAE {curve[-1]['val_mae_cp']:.0f} cp  ("
                                + "  ".join(f"{k} {v:.0f}" for k, v in by_source.items()) + ")")
                 if args.wandb:
-                    wandb.log({"val_subset_mse": curve[-1]["val_mse"], "val_subset_mae_cp": curve[-1]["val_mae_cp"]})
+                    wandb.log({"global_step": (epoch - 1) * steps_per_epoch + step + 1,
+                               "val_subset_mse": curve[-1]["val_mse"], "val_subset_mae_cp": curve[-1]["val_mae_cp"],
+                               **{f"val_subset_mae_cp/{k}": v for k, v in by_source.items()}})
+                    t_log, step_log = time.time(), step + 1   # don't count validation time against throughput
             if args.save_every and (step + 1) % args.save_every == 0 and step + 1 < steps_per_epoch:
                 save(checkpoint(epoch, step + 1), "last.pt")
 
@@ -653,7 +676,7 @@ def main():
             f"mirrored {mirror_mae_cp:.0f} cp  ({time.time() - t0:.0f}s)\n"
             f"  MAE by source: {per_source}   (* = not trained on)")
         if args.wandb:
-            wandb.log({"epoch": epoch, "val_mse": val_mse, "val_mae_cp": val_mae_cp,
+            wandb.log({"global_step": epoch * steps_per_epoch, "epoch": epoch, "val_mse": val_mse, "val_mae_cp": val_mae_cp,
                        "val_mirror_mae_cp": mirror_mae_cp,
                        **{f"val_mae_cp/{k}": v for k, v in by_source.items()}})
 
@@ -664,6 +687,8 @@ def main():
         if is_best:
             log(f"  new best -> {save(ckpt, 'best.pt')}")
 
+    if args.wandb:
+        wandb.finish()
     if world > 1:
         dist.destroy_process_group()
 
