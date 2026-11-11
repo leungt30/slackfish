@@ -72,10 +72,10 @@
 #
 # Bullet vs blitz settings (what the presets change, and how to adjust them):
 #                 clock   think per move (budget)                     replies pondered   pondered reply played at once from
-#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 6   (--bot t3-sg64-muon-lichessgames-16.0m:6)
-#   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 5   (--bot t3-sg64-muon-lichessgames-16.0m:5)
+#   blitz         3+2     1/12 of clock + increment: ~17 s at 3:00    3                  depth 6   (--bot t3-sg64-muon-lichessgames3m-16.0m:6)
+#   bullet        1+1     1/12 of clock + increment: ~6 s at 1:00,    3                  depth 5   (--bot t3-sg64-muon-lichessgames3m-16.0m:5)
 #                         4.3 s at 0:40, 2.7 s at 0:20, 1.7 s at 0:08
-#   rapid         10+5    1/14 of clock + increment: ~43 s + 5 at 10:00  3                  depth 7   (--bot t3-sg64-muon-lichessgames-16.0m:7 --moves-left 14)
+#   rapid         10+5    1/14 of clock + increment: ~43 s + 5 at 10:00  3                  depth 7   (--bot t3-sg64-muon-lichessgames3m-16.0m:7 --moves-left 14)
 #   - Rapid: the budget is 1/14 so a long game (90+ moves) doesn't run low; at 10+5 the bot adds
 #     5 s a move, so it spends the clock down slowly. These are starting values chosen from the
 #     blitz data (about +1 ply per tripling of time), not measured on rapid games. After a series,
@@ -125,7 +125,7 @@ BOOK=Cerebellum3Merge.bin
 [ -f "Models/Books/$BOOK" ] || BOOK=gm2001.bin
 # Model and depth: NAME:DEPTH. The search is timed with no depth limit; DEPTH is how
 # deep a pondered reply must have been searched to be played without thinking more.
-DEFAULTS=(--bot t3-sg64-muon-lichessgames-16.0m:6 --book "$BOOK" --book-plies 30)
+DEFAULTS=(--bot t3-sg64-muon-lichessgames3m-16.0m:6 --book "$BOOK" --book-plies 30)
 # Opponents for the presets: online bots rated this at the series' speed, found when it
 # starts (`opponents` lists them). Any that decline twice or don't answer are skipped
 # for the rest of the run; bots that played 100 bot games today are skipped too.
@@ -136,13 +136,13 @@ OPPONENT_RATING=2200-2500
 BLITZ=(--challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 3+2 --rated)
 # Bullet: also 1/12 (about 6 s at 1:00), and a pondered reply searched to depth 5 is
 # played at once.
-BULLET=(--bot t3-sg64-muon-lichessgames-16.0m:5 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
+BULLET=(--bot t3-sg64-muon-lichessgames3m-16.0m:5 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 1+1 --rated)
 
 # Rapid: 10+5 (rapid is 8-25 minutes of estimated play: base + 40 increments). More thinking
 # time per move: 1/14 of the clock + increment (about 43 s + 5 at 10:00), and a pondered reply
 # searched to depth 7 is played at once. Starting values, not yet tuned against games (see the
 # notes below for how to check them).
-RAPID=(--bot t3-sg64-muon-lichessgames-16.0m:7 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 10+5 --rated --moves-left 14)
+RAPID=(--bot t3-sg64-muon-lichessgames3m-16.0m:7 --challenge auto --opponent-rating "$OPPONENT_RATING" --games 10 --clock 10+5 --rated --moves-left 14)
 
 # The bot's pid, if it's running (exit status 1 otherwise)
 pid() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null && cat "$PIDFILE"; }
