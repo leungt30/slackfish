@@ -208,6 +208,7 @@ BOTS = {
     "t2-h8-wsd-lichessgames-6.69m": NoFeatSpec("Models/Weights/SlackFishV-T2-H8-WSD-LichessGames-6.69M"),   # as t2-sb-wsd-lichessgames, 8 heads of 32 (a tie)
     "t2-sg-wsd-lichessgames-8.87m": NoFeatSpec("Models/Weights/SlackFishV-T2-SG-WSD-LichessGames-8.87M"),   # as t2-sb-wsd-lichessgames + smolgen (position-dependent attention bias)
     "t3-sg64-muon-lichessgames-16.0m": NoFeatSpec("Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-16.0M"),   # width 384, 8 heads, 64 tokens (v4), smolgen, Muon
+    "t3-sg64-muon-lichessgames3m-16.0m": NoFeatSpec("Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames3M-16.0M"),   # the same on 3 months of games (1.73B positions)
 }
 
 

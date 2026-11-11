@@ -51,11 +51,19 @@ from the step-320k snapshot (before the decay) with `--epochs 2`. Val 80.7 vs 83
 (−27 to +43) at depth 2 and +15 (−19 to +49) at 0.5 s/move against the 1-epoch model: not clearly
 stronger (a ~1,000-game match would tell). More data looks like the better use of 9 hours.
 
-## Next: more data
+## Done: more data (the new default)
 
 **Done, the memory part:** shuffled folders (`NoFeat.shuffle_data`, README "Shuffled folders"):
 training reads the data in chunks, ~1.6 GB per process at any size, the same speed. The data now
-only needs disk. Next: encode more months of games (one month ~435M positions, ~16 GB), shuffle
+only needs disk.
+
+**Done:** `t3-sg64-muon-lichessgames3m-16.0m`, T3 on the evaluation database + July–September 2026
+games (1.73B positions, 15.5 h): +33 Elo at depth 2, +82 at 0.5 s/move, +68 at 3+2 against the
+1-month T3. Data is still paying off; next: more months, a bigger model on this data (measure search
+speed first: small search batches are launch-bound, so a wider model may be nearly free at equal
+time), and the move-prediction head.
+
+Original plan: encode more months of games (one month ~435M positions, ~16 GB), shuffle
 them with the current data into one folder, and train T3 on it; compare with the 1-epoch T3 by
 each model's own held-out score and by matches. Cross-month duplicates: `prepare_data`
 deduplicates within one run, so encode the months together, or accept repeats between months
