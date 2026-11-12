@@ -749,7 +749,7 @@ class BotRunner:
                         print("no listed opponent is online and free; waiting")
             if opponent:
                 kind, who = opponent
-                clock = {"clock.limit": int(base), "clock.increment": int(inc), "color": "random"}
+                clock = {"clock.limit": int(base), "clock.increment": int(inc), "color": a.color}
                 try:
                     if kind == "ai":
                         reply = self.li.post("/api/challenge/ai", {"level": who, **clock})
@@ -888,6 +888,8 @@ def main():
     p.add_argument("--rated", action="store_true", help="with --challenge: rated games (default casual)")
     p.add_argument("--casual", action="store_true", help="with --challenge: casual games even if --rated is given "
                                                          "(e.g. after a preset that adds --rated)")
+    p.add_argument("--color", choices=["white", "black", "random"], default="random",
+                   help="with --challenge: the colour we ask for (default random); the opponent may decline it")
     o = sub.add_parser("opponents", help="list online bots to challenge (what --challenge auto picks)")
     o.add_argument("--clock", type=parse_clock, default=(180.0, 2.0), help="MINUTES+INCREMENT (default 3+2)")
     o.add_argument("--rating", type=parse_range, default=(1700.0, 2100.0), metavar="MIN-MAX",

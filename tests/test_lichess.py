@@ -278,7 +278,7 @@ def challenge(limit=180, increment=2, rated=False, variant="standard", title=Non
 
 def runner_args(**overrides):
     args = dict(book=None, challenge=None, stockfish=None, min_base=30, max_base=1800, allow_no_increment=False,
-                casual_only=False, no_bots=False, max_games=1)
+                casual_only=False, no_bots=False, max_games=1, color="random")
     args.update(overrides)
     return types.SimpleNamespace(**args)
 
