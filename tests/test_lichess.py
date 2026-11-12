@@ -12,6 +12,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 from unittest import mock
 
 import chess
@@ -55,7 +56,7 @@ class FakeLichess:
         self.extra = {}
         return state
 
-    def post(self, path, data=None):
+    def post(self, path, data=None, fast=False):
         if "/move/" in path and self.fail_posts:
             self.fail_posts -= 1
             raise requests.ConnectionError("connection reset")
@@ -233,6 +234,22 @@ class GamePlayerTest(LichessTest):
             self.assertRegex(line, ponderstats.MOVE)
         timestamped = "11-09 12:00:00 " + pondered[0]   # the log as Timestamped writes it
         self.assertRegex(timestamped, ponderstats.MOVE)
+
+
+class FastPostTest(unittest.TestCase):
+    """A move POST waits 3 s, not 15, and retries on a fresh connection."""
+
+    def test_stalled_move_post_retries_on_a_new_session(self):
+        li = lichess.Lichess("token")
+        stalled, healthy = unittest.mock.Mock(), unittest.mock.Mock()
+        stalled.request.side_effect = requests.Timeout("read timed out")
+        healthy.request.return_value = unittest.mock.Mock(status_code=200, ok=True, content=b"", status=None)
+        li.fast_session = stalled
+        li.new_session = lambda: healthy
+        li.post("/api/bot/game/x/move/e2e4", fast=True)
+        self.assertEqual(stalled.request.call_args.kwargs["timeout"], (2, 3))
+        self.assertIs(li.fast_session, healthy)
+        self.assertEqual(healthy.request.call_count, 1)
 
 
 class FallbackMoveTest(unittest.TestCase):

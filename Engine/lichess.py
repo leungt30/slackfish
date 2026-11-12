@@ -105,16 +105,23 @@ class Lichess:
     def __init__(self, token):
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {token}"
+        self.token = token
+        self.fast_session = self.new_session()   # moves only: replaced after a stall, so the streams' connections are left alone
         self.last_error = None   # time.monotonic() of the last failed connection
+
+    def new_session(self):
+        s = requests.Session()
+        s.headers["Authorization"] = f"Bearer {self.token}"
+        return s
 
     def quiet_for(self):
         """Seconds since the last connection error (inf if none yet)."""
         return float("inf") if self.last_error is None else time.monotonic() - self.last_error
 
-    def _request(self, method, path, **kwargs):
+    def _request(self, method, path, session=None, **kwargs):
         """One request: records connection errors (see quiet_for) and exits on 401."""
         try:
-            r = self.session.request(method, API + path, **kwargs)
+            r = (session or self.session).request(method, API + path, **kwargs)
         except (requests.ConnectionError, requests.Timeout):
             self.last_error = time.monotonic()
             raise
@@ -134,23 +141,31 @@ class Lichess:
         r.raise_for_status()
         return [json.loads(line) for line in r.text.splitlines() if line.strip()]
 
-    def post(self, path, data=None):
-        """POST, retrying dropped connections and server errors (Lichess closes idle
+    def post(self, path, data=None, fast=False):
+        """fast (moves): a move normally takes ~0.1 s, so wait only 3 s for the reply and retry at once on a new
+        connection; a stalled one cost 45 s and the game on time in bullet. Otherwise: POST, retrying dropped connections and server errors (Lichess closes idle
         keep-alive connections, so the first request after a pause can fail; an
         unsent move would otherwise lose on time) and waiting out rate limits."""
-        for attempt in range(6):
+        tries = 12 if fast else 6
+        for attempt in range(tries):
             try:
-                r = self._request("POST", path, data=data, timeout=15)
+                if fast:
+                    r = self._request("POST", path, session=self.fast_session, data=data, timeout=(2, 3))
+                else:
+                    r = self._request("POST", path, data=data, timeout=15)
             except (requests.ConnectionError, requests.Timeout) as e:
-                if attempt == 5:
+                if attempt == tries - 1:
                     raise
                 print(f"POST {path} failed ({e.__class__.__name__}), retrying")
-                time.sleep(0.25 * 2 ** attempt)
+                if fast:
+                    self.fast_session = self.new_session()
+                else:
+                    time.sleep(0.25 * 2 ** attempt)
                 continue
             if r.status_code == 429:
                 print("rate limited by Lichess, waiting a minute")
                 time.sleep(60)
-            elif r.status_code >= 500 and attempt < 5:
+            elif r.status_code >= 500 and attempt < tries - 1:
                 time.sleep(0.25 * 2 ** attempt)
             else:
                 break
@@ -480,7 +495,7 @@ class GamePlayer:
 
     def try_post(self, path):
         try:
-            self.li.post(path)
+            self.li.post(path, fast=True)
         except requests.HTTPError as e:   # e.g. the game ended while we were thinking
             print(f"[{self.game_id}] {e}")
 
