@@ -99,6 +99,9 @@ def read_token():
     return token
 
 
+GAME_STREAM_TIMEOUT = 20   # seconds of silence (Lichess sends a keep-alive line every few seconds) before a game stream is dropped and reconnected
+
+
 class Lichess:
     """The few Lichess API calls a bot needs."""
 
@@ -173,10 +176,12 @@ class Lichess:
             raise requests.HTTPError(f"{r.status_code} {path}: {r.text.strip()}", response=r)
         return r.json() if r.content else None
 
-    def stream(self, path):
+    def stream(self, path, read_timeout=90):
         """Yield each event of an ndjson stream, or None for Lichess's blank
-        keep-alive lines (every few seconds), so a reader can check for stopping."""
-        with self._request("GET", path, stream=True, timeout=(30, 90)) as r:
+        keep-alive lines (every few seconds), so a reader can check for stopping.
+        read_timeout: seconds of silence before the stream counts as dead (a game stream
+        uses 20: a stalled connection once went unnoticed for 90 s, longer than a bullet game)."""
+        with self._request("GET", path, stream=True, timeout=(30, read_timeout)) as r:
             r.raise_for_status()
             try:
                 for line in r.iter_lines():
@@ -323,7 +328,7 @@ class GamePlayer:
 
     def follow(self, first):
         """Read the game stream; True once the game is over."""
-        stream = self.li.stream(f"/api/bot/game/stream/{self.game_id}")
+        stream = self.li.stream(f"/api/bot/game/stream/{self.game_id}", read_timeout=GAME_STREAM_TIMEOUT)
         full = next(e for e in stream if e)
         self.outage = None   # connected again
         if first:

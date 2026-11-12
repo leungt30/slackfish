@@ -71,7 +71,7 @@ class FakeLichess:
             board.push_uci(uci)
         return board.turn == chess.WHITE
 
-    def stream(self, path):
+    def stream(self, path, read_timeout=90):
         self.connects += 1
         first = self.connects == 1
         state = self.state()
@@ -250,6 +250,16 @@ class FastPostTest(unittest.TestCase):
         self.assertEqual(stalled.request.call_args.kwargs["timeout"], (2, 3))
         self.assertIs(li.fast_session, healthy)
         self.assertEqual(healthy.request.call_count, 1)
+
+
+class StreamTimeoutTest(unittest.TestCase):
+    def test_game_stream_gives_up_on_silence_after_20_seconds(self):
+        li = lichess.Lichess("token")
+        session = unittest.mock.MagicMock()
+        session.request.return_value.__enter__.return_value.iter_lines.return_value = iter([b"{}"])
+        li.session = session
+        self.assertEqual(list(li.stream("/x", read_timeout=lichess.GAME_STREAM_TIMEOUT)), [{}])
+        self.assertEqual(session.request.call_args.kwargs["timeout"], (30, 20))
 
 
 class FallbackMoveTest(unittest.TestCase):
