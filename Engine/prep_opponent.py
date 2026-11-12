@@ -29,6 +29,8 @@ for g in games:
             theirs[c][b.epd()][m.uci()] += 1
         b.push(m)
 book = chess.polyglot.open_reader(f"{ROOT}/Models/Books/Cerebellum3Merge.bin")
+# our own prepared book first: positions it already covers are followed, not analysed again (EXTEND=1 to extend it)
+ours = chess.polyglot.open_reader(f"{ROOT}/Models/Books/bongaclang.bin") if os.environ.get("EXTEND") else None
 eng = chess.engine.SimpleEngine.popen_uci(shutil.which("stockfish"))
 eng.configure({"Threads": 2, "Hash": 256})
 out = open(OUT, "a")
@@ -47,7 +49,8 @@ def walk(b, c):   # c = the opponent's colour
             if n >= MIN_N and n >= SHARE * tot:
                 b.push_uci(u); walk(b, c); b.pop()
         return
-    es = list(book.find_all(b))
+    es = list(ours.find_all(b)) if ours else []
+    es = es or list(book.find_all(b))
     if es:
         mv = max(es, key=lambda e: e.weight).move; src = "cerebellum"
     else:
@@ -69,7 +72,7 @@ if PREFIX:
     log("tree:", OPPONENT, "plays", c, "after", " ".join(PREFIX))
     walk(start, c)
 else:
-    for c in ("white", "black"):
+    for c in os.environ.get("COLOURS", "white black").split():
         log("tree:", OPPONENT, "plays", c); walk(chess.Board(), c)
 eng.quit()
 log(f"done: {n_an} positions analysed in {(time.time()-t0)/60:.0f} min")
