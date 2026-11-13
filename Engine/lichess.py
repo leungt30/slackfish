@@ -72,7 +72,7 @@ import chess
 import chess.pgn
 import requests
 
-from bots import BOTS, PONDER_REPLIES, ROOT, OpeningBook, load_bot
+from bots import BOTS, PONDER_REPLIES, ROOT, load_bot, open_books
 from clock import MOVES_LEFT, MOVES_LEFT_BULLET, move_budget, moves_left_for, parse_clock, speed_of
 
 API = "https://lichess.org"
@@ -99,22 +99,32 @@ def read_token():
     return token
 
 
+GAME_STREAM_TIMEOUT = 20   # seconds of silence (Lichess sends a keep-alive line every few seconds) before a game stream is dropped and reconnected
+
+
 class Lichess:
     """The few Lichess API calls a bot needs."""
 
     def __init__(self, token):
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {token}"
+        self.token = token
+        self.fast_session = self.new_session()   # moves only: replaced after a stall, so the streams' connections are left alone
         self.last_error = None   # time.monotonic() of the last failed connection
+
+    def new_session(self):
+        s = requests.Session()
+        s.headers["Authorization"] = f"Bearer {self.token}"
+        return s
 
     def quiet_for(self):
         """Seconds since the last connection error (inf if none yet)."""
         return float("inf") if self.last_error is None else time.monotonic() - self.last_error
 
-    def _request(self, method, path, **kwargs):
+    def _request(self, method, path, session=None, **kwargs):
         """One request: records connection errors (see quiet_for) and exits on 401."""
         try:
-            r = self.session.request(method, API + path, **kwargs)
+            r = (session or self.session).request(method, API + path, **kwargs)
         except (requests.ConnectionError, requests.Timeout):
             self.last_error = time.monotonic()
             raise
@@ -134,23 +144,31 @@ class Lichess:
         r.raise_for_status()
         return [json.loads(line) for line in r.text.splitlines() if line.strip()]
 
-    def post(self, path, data=None):
-        """POST, retrying dropped connections and server errors (Lichess closes idle
+    def post(self, path, data=None, fast=False):
+        """fast (moves): a move normally takes ~0.1 s, so wait only 3 s for the reply and retry at once on a new
+        connection; a stalled one cost 45 s and the game on time in bullet. Otherwise: POST, retrying dropped connections and server errors (Lichess closes idle
         keep-alive connections, so the first request after a pause can fail; an
         unsent move would otherwise lose on time) and waiting out rate limits."""
-        for attempt in range(6):
+        tries = 12 if fast else 6
+        for attempt in range(tries):
             try:
-                r = self._request("POST", path, data=data, timeout=15)
+                if fast:
+                    r = self._request("POST", path, session=self.fast_session, data=data, timeout=(2, 3))
+                else:
+                    r = self._request("POST", path, data=data, timeout=15)
             except (requests.ConnectionError, requests.Timeout) as e:
-                if attempt == 5:
+                if attempt == tries - 1:
                     raise
                 print(f"POST {path} failed ({e.__class__.__name__}), retrying")
-                time.sleep(0.25 * 2 ** attempt)
+                if fast:
+                    self.fast_session = self.new_session()
+                else:
+                    time.sleep(0.25 * 2 ** attempt)
                 continue
             if r.status_code == 429:
                 print("rate limited by Lichess, waiting a minute")
                 time.sleep(60)
-            elif r.status_code >= 500 and attempt < 5:
+            elif r.status_code >= 500 and attempt < tries - 1:
                 time.sleep(0.25 * 2 ** attempt)
             else:
                 break
@@ -158,10 +176,12 @@ class Lichess:
             raise requests.HTTPError(f"{r.status_code} {path}: {r.text.strip()}", response=r)
         return r.json() if r.content else None
 
-    def stream(self, path):
+    def stream(self, path, read_timeout=90):
         """Yield each event of an ndjson stream, or None for Lichess's blank
-        keep-alive lines (every few seconds), so a reader can check for stopping."""
-        with self._request("GET", path, stream=True, timeout=(30, 90)) as r:
+        keep-alive lines (every few seconds), so a reader can check for stopping.
+        read_timeout: seconds of silence before the stream counts as dead (a game stream
+        uses 20: a stalled connection once went unnoticed for 90 s, longer than a bullet game)."""
+        with self._request("GET", path, stream=True, timeout=(30, read_timeout)) as r:
             r.raise_for_status()
             try:
                 for line in r.iter_lines():
@@ -308,7 +328,7 @@ class GamePlayer:
 
     def follow(self, first):
         """Read the game stream; True once the game is over."""
-        stream = self.li.stream(f"/api/bot/game/stream/{self.game_id}")
+        stream = self.li.stream(f"/api/bot/game/stream/{self.game_id}", read_timeout=GAME_STREAM_TIMEOUT)
         full = next(e for e in stream if e)
         self.outage = None   # connected again
         if first:
@@ -480,7 +500,7 @@ class GamePlayer:
 
     def try_post(self, path):
         try:
-            self.li.post(path)
+            self.li.post(path, fast=True)
         except requests.HTTPError as e:   # e.g. the game ended while we were thinking
             print(f"[{self.game_id}] {e}")
 
@@ -497,8 +517,7 @@ class BotRunner:
         self.me = account["id"]
         if account.get("title") != "BOT":
             raise SystemExit(f"{account['username']} isn't a BOT account yet: run `lichess.py upgrade` first")
-        self.book = (OpeningBook(os.path.join(ROOT, "Models", "Books", args.book), max_plies=args.book_plies)
-                     if args.book else None)
+        self.book = self.open_book()
         self.lock = threading.Lock()
         self.games = {}   # game id -> GamePlayer
         if args.challenge == ["auto"]:   # online bots rated --opponent-rating at this clock's speed
@@ -585,7 +604,7 @@ class BotRunner:
             if game_id in self.games:
                 return
             self.accepted.pop(game_id, None)   # a challenge's game has its id
-            player = GamePlayer(self.li, game_id, self.me, self.args, self.book)
+            player = GamePlayer(self.li, game_id, self.me, self.args, self.open_book())
             self.games[game_id] = player
             if self.pending and self.pending[0] == game_id:
                 self.refusals[self.pending[1]] = 0
@@ -593,6 +612,14 @@ class BotRunner:
                 self.challenged.add(game_id)
                 self.started += 1
         threading.Thread(target=self.play, args=(player,), daemon=True).start()
+
+    def open_book(self):
+        """The opening book(s), opened afresh for each game so a book file rewritten while the bot runs
+        (see Engine/make_book.py; write to a temp file and rename) is used from the next game on."""
+        if not self.args.book:
+            return None
+        return open_books([os.path.join(ROOT, "Models", "Books", name) for name in self.args.book.split(",")],
+                          max_plies=self.args.book_plies)
 
     def decline_reason(self, c):
         """A Lichess decline reason key, or None to accept. Called with self.lock held."""
@@ -690,11 +717,13 @@ class BotRunner:
                 holding = unstable
                 print(f"connection unstable: no new challenges until {NETWORK_QUIET // 60} minutes without errors"
                       if unstable else "connection stable again: resuming challenges")
-            free = self.free_users() if not self.pending and not self.games and not unstable else None
+            busy_ok = getattr(a, "even_if_busy", False)   # challenge opponents that are in a game too
+            free = self.free_users() if not self.pending and not self.games and not unstable and not busy_ok else None
             with self.lock:
                 if self.pending and time.monotonic() - self.pending[2] > ANSWER_WAIT:   # no answer: offline or ignoring us
                     stale, self.pending = self.pending, None
-                    self.refusals[stale[1]] += 1
+                    if not busy_ok:
+                        self.refusals[stale[1]] += 1
                     print(f"{label(stale[1])} didn't answer; canceling")
                     threading.Thread(target=self.cancel, args=(stale[0],), daemon=True).start()
                 willing = [o for o in self.opponents if self.refusals[o] < 2]
@@ -722,7 +751,7 @@ class BotRunner:
                         print("no listed opponent is online and free; waiting")
             if opponent:
                 kind, who = opponent
-                clock = {"clock.limit": int(base), "clock.increment": int(inc), "color": "random"}
+                clock = {"clock.limit": int(base), "clock.increment": int(inc), "color": a.color}
                 try:
                     if kind == "ai":
                         reply = self.li.post("/api/challenge/ai", {"level": who, **clock})
@@ -822,9 +851,9 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("upgrade", help="turn the token's account into a BOT account (permanent; no games played yet)")
     p = sub.add_parser("play", help="go online: accept challenges, optionally play the Lichess AI")
-    p.add_argument("--bot", type=parse_bot, default=("t3-sg64-muon-lichessgames-16.0m", 3),
-                   help="NAME[:DEPTH]; DEPTH is when a pondered reply is played at once (default t3-sg64-muon-lichessgames-16.0m:3)")
-    p.add_argument("--book", nargs="?", const="gm2001.bin", help="opening book in Models/Books (default with no name: gm2001.bin)")
+    p.add_argument("--bot", type=parse_bot, default=("t3-sg64-muon-lichessgames3m-16.0m", 3),
+                   help="NAME[:DEPTH]; DEPTH is when a pondered reply is played at once (default t3-sg64-muon-lichessgames3m-16.0m:3)")
+    p.add_argument("--book", nargs="?", const="gm2001.bin", help="opening book in Models/Books (default with no name: gm2001.bin); NAME,NAME,... layers books, the first with a move for the position plays it")
     p.add_argument("--book-plies", type=int, default=16,
                    help="leave the book after this many plies at most (default 16; deep engine books like Cerebellum go 30+)")
     p.add_argument("--max-games", type=int, default=1, help="games at once (default 1)")
@@ -861,6 +890,10 @@ def main():
     p.add_argument("--rated", action="store_true", help="with --challenge: rated games (default casual)")
     p.add_argument("--casual", action="store_true", help="with --challenge: casual games even if --rated is given "
                                                          "(e.g. after a preset that adds --rated)")
+    p.add_argument("--even-if-busy", action="store_true",
+                   help="challenge listed opponents even while they are in a game; unanswered challenges are not held against them")
+    p.add_argument("--color", choices=["white", "black", "random"], default="random",
+                   help="with --challenge: the colour we ask for (default random); the opponent may decline it")
     o = sub.add_parser("opponents", help="list online bots to challenge (what --challenge auto picks)")
     o.add_argument("--clock", type=parse_clock, default=(180.0, 2.0), help="MINUTES+INCREMENT (default 3+2)")
     o.add_argument("--rating", type=parse_range, default=(1700.0, 2100.0), metavar="MIN-MAX",

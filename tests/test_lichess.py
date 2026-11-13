@@ -12,6 +12,7 @@ import threading
 import time
 import types
 import unittest
+import unittest.mock
 from unittest import mock
 
 import chess
@@ -55,7 +56,7 @@ class FakeLichess:
         self.extra = {}
         return state
 
-    def post(self, path, data=None):
+    def post(self, path, data=None, fast=False):
         if "/move/" in path and self.fail_posts:
             self.fail_posts -= 1
             raise requests.ConnectionError("connection reset")
@@ -70,7 +71,7 @@ class FakeLichess:
             board.push_uci(uci)
         return board.turn == chess.WHITE
 
-    def stream(self, path):
+    def stream(self, path, read_timeout=90):
         self.connects += 1
         first = self.connects == 1
         state = self.state()
@@ -235,6 +236,32 @@ class GamePlayerTest(LichessTest):
         self.assertRegex(timestamped, ponderstats.MOVE)
 
 
+class FastPostTest(unittest.TestCase):
+    """A move POST waits 3 s, not 15, and retries on a fresh connection."""
+
+    def test_stalled_move_post_retries_on_a_new_session(self):
+        li = lichess.Lichess("token")
+        stalled, healthy = unittest.mock.Mock(), unittest.mock.Mock()
+        stalled.request.side_effect = requests.Timeout("read timed out")
+        healthy.request.return_value = unittest.mock.Mock(status_code=200, ok=True, content=b"", status=None)
+        li.fast_session = stalled
+        li.new_session = lambda: healthy
+        li.post("/api/bot/game/x/move/e2e4", fast=True)
+        self.assertEqual(stalled.request.call_args.kwargs["timeout"], (2, 3))
+        self.assertIs(li.fast_session, healthy)
+        self.assertEqual(healthy.request.call_count, 1)
+
+
+class StreamTimeoutTest(unittest.TestCase):
+    def test_game_stream_gives_up_on_silence_after_20_seconds(self):
+        li = lichess.Lichess("token")
+        session = unittest.mock.MagicMock()
+        session.request.return_value.__enter__.return_value.iter_lines.return_value = iter([b"{}"])
+        li.session = session
+        self.assertEqual(list(li.stream("/x", read_timeout=lichess.GAME_STREAM_TIMEOUT)), [{}])
+        self.assertEqual(session.request.call_args.kwargs["timeout"], (30, 20))
+
+
 class FallbackMoveTest(unittest.TestCase):
     def test_mate_then_captures_then_any(self):
         self.assertEqual(lichess.fallback_move(chess.Board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1")).uci(), "a1a8")
@@ -251,7 +278,7 @@ def challenge(limit=180, increment=2, rated=False, variant="standard", title=Non
 
 def runner_args(**overrides):
     args = dict(book=None, challenge=None, stockfish=None, min_base=30, max_base=1800, allow_no_increment=False,
-                casual_only=False, no_bots=False, max_games=1)
+                casual_only=False, no_bots=False, max_games=1, color="random")
     args.update(overrides)
     return types.SimpleNamespace(**args)
 

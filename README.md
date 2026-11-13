@@ -13,7 +13,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # 2. Install dependencies into .venv
 uv sync
 
-# 3. Play against the engine in the browser (default bot: t3-sg64-muon-lichessgames-16.0m at depth 3)
+# 3. Play against the engine in the browser (default bot: t3-sg64-muon-lichessgames3m-16.0m at depth 3)
 uv run python Engine/gui.py
 ```
 
@@ -37,7 +37,8 @@ uv run python Engine/gui.py
 | **t2-sb-wsd-lichessgames-6.97m** | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`) | `Models/Weights/SlackFishV-T2-SB-WSD-LichessGames-6.97M/` | Yes, the previous default: as t2-sb-wsd-lichess plus 435M positions from analysed September 2026 Lichess games (828M in all), 4× RTX 4090 in 4.2 h, val MAE lichess 95.0 / lichess_games 94.6 cp. Scored 218/256 against t2-sb-w-lichess (about +303 Elo) and 191/256 against t2-sb-wsd-lichess (+187) at depth 2 |
 | **t2-h8-wsd-lichessgames-6.69m** | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`, `n_heads=8`) | `Models/Weights/SlackFishV-T2-H8-WSD-LichessGames-6.69M/` | Yes, about as strong as t2-sb-wsd-lichessgames (an ablation): 8 heads of 32 instead of 16 of 16, same data and recipe, 10% faster training, val MAE lichess 95.3 / lichess_games 94.7 cp; 138/256 against t2-sb-wsd-lichessgames at depth 2 (+27 Elo, −10 to +65) |
 | **t2-sg-wsd-lichessgames-8.87m** | `NoFeat/model.py` (`ChessTransformerV3`, `spatial_bias=True`, `smolgen=True`) | `Models/Weights/SlackFishV-T2-SG-WSD-LichessGames-8.87M/` | Yes, the previous default: t2-sb-wsd-lichessgames plus smolgen, a position-dependent attention bias (+1.9M parameters), same data and recipe, 4× RTX 4090 in 5.5 h, val MAE lichess 87.5 / lichess_games 88.9 cp. Against t2-sb-wsd-lichessgames: 162.5/256 at depth 2 (+96 Elo) and 152.5/256 at equal time, 0.5 s/move (+67) |
-| **t3-sg64-muon-lichessgames-16.0m** (default) | `NoFeat/model.py` (`ChessTransformerV4`, `spatial_bias=True`, `smolgen=True`) | `Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-16.0M/` | **Yes, strongest:** T3's width 384 with 8 heads of 48, 64 tokens (each position seen from the side to move, castling in the rook tokens), static + smolgen attention bias, trained with Muon; same 828M positions and WSD recipe, no augmentation; 16.0M parameters, 7.5 h on 4× RTX 4090; val MAE lichess 81.8 / lichess_games 84.9 cp. Against t2-sg-wsd-lichessgames: 169.5/256 at depth 2 (+117 Elo) and 167.5/256 at 0.5 s/move (+111); searches about as fast |
+| **t3-sg64-muon-lichessgames-16.0m** | `NoFeat/model.py` (`ChessTransformerV4`, `spatial_bias=True`, `smolgen=True`) | `Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-16.0M/` | Yes, the previous default: T3's width 384 with 8 heads of 48, 64 tokens (each position seen from the side to move, castling in the rook tokens), static + smolgen attention bias, trained with Muon; same 828M positions and WSD recipe, no augmentation; 16.0M parameters, 7.5 h on 4× RTX 4090; val MAE lichess 81.8 / lichess_games 84.9 cp. Against t2-sg-wsd-lichessgames: 169.5/256 at depth 2 (+117 Elo) and 167.5/256 at 0.5 s/move (+111); searches about as fast |
+| **t3-sg64-muon-lichessgames3m-16.0m** (default) | `NoFeat/model.py` (`ChessTransformerV4`, `spatial_bias=True`, `smolgen=True`) | `Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames3M-16.0M/` | **Yes, strongest:** t3-sg64-muon-lichessgames on three months of analysed Lichess games (July–September 2026) plus the evaluation database, 1.73B training positions (2.1×), same architecture and recipe; 15.5 h on 4× RTX 4090; val MAE lichess 83.0 / lichess_games 74.5 cp (its own held-out split). Against t3-sg64-muon-lichessgames: 140/256 at depth 2 (+33 Elo), 157.5/256 at 0.5 s/move (+82) and 77/129 at a 3+2 clock (+68); same search speed |
 
 Model weights aren't stored in git: the CNN checkpoints (`SlackFishCNN_*`) and each NoFeat model's `model.safetensors` are downloaded from [Hugging Face](https://huggingface.co/mathemagicianz/slackfish) on first use (about 28 MB for the default bot), and each NoFeat folder in the repo holds only its `config.json`. A local `model.safetensors`, a training checkpoint `best.pt`, or a CNN checkpoint is used instead when present. See [Sharing models](#sharing-models).
 
@@ -76,7 +77,7 @@ About 40 tests, ~10 s on CPU, with no trained model, GPU or network needed: a ma
 ### In the browser (recommended for human vs bot)
 
 ```bash
-uv run python Engine/gui.py                              # opens http://localhost:8000, vs t3-sg64-muon-lichessgames-16.0m:3
+uv run python Engine/gui.py                              # opens http://localhost:8000, vs t3-sg64-muon-lichessgames3m-16.0m:3
 uv run python Engine/gui.py --bot t2-w-6.41m:2 --color black
 uv run python Engine/gui.py --temperature 50              # sample moves instead of always the best (centipawns)
 uv run python Engine/gui.py --book                       # bots open from the gm2001 book (also a menu in the page)
@@ -292,7 +293,7 @@ uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v3 --d-model 256 --hea
     --layers 8 --spatial-bias --smolgen --target winprob --dropout 0 --sources lichess lichess_games --data data/nofeat_lichess_all \
     --epochs 1 --batch-size 2048 --lr 1.2e-3 --warmup-steps 2000 --schedule wsd --decay-frac 0.2 --lr-floor 0.01 \
     --val-frac 0.005 --val-every 10000 --save-every 5000 --out Models/Weights/SlackFishV-T2-SG-WSD-LichessGames-8.87M
-# t3-sg64-muon-lichessgames-16.0m (the default bot, 7.5 h): 64 tokens (--arch v4), width 384, 8 heads, smolgen, Muon; no colour-swap
+# t3-sg64-muon-lichessgames-16.0m (the previous default bot, 7.5 h): 64 tokens (--arch v4), width 384, 8 heads, smolgen, Muon; no colour-swap
 # augmentation, which --arch v4 makes a no-op (it is turned off automatically)
 uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v4 --d-model 384 --heads 8 --d-ff 1536 \
     --layers 8 --spatial-bias --smolgen --optimizer muon --target winprob --dropout 0 \
@@ -305,6 +306,16 @@ uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v4 --d-model 384 --hea
 uv run torchrun --nproc-per-node 4 -m NoFeat.train ... (the options above) --epochs 2 \
     --resume Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-16.0M/snapshot_step320000.pt \
     --out Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-2ep-16.0M
+# t3-sg64-muon-lichessgames3m-16.0m (the default bot, 15.5 h): the same model and recipe on three months of
+# games plus the evaluation database, shuffled into one folder (see "Shuffled folders" under Data):
+uv run python -m NoFeat.prepare_data --lichess-games data/lichess_db_standard_rated_2026-08.pgn.zst \
+    --lichess-games data/lichess_db_standard_rated_2026-07.pgn.zst --out data/nofeat_games_2026-07_08
+uv run python -m NoFeat.shuffle_data data/nofeat_lichess_all data/nofeat_games_2026-07_08 --out data/nofeat_lichess_3m_shuffled
+uv run torchrun --nproc-per-node 4 -m NoFeat.train --arch v4 --d-model 384 --heads 8 --d-ff 1536 \
+    --layers 8 --spatial-bias --smolgen --optimizer muon --target winprob --dropout 0 \
+    --sources lichess lichess_games --data data/nofeat_lichess_3m_shuffled \
+    --epochs 1 --batch-size 2048 --lr 1.2e-3 --warmup-steps 2000 --schedule wsd --decay-frac 0.2 --lr-floor 0.01 \
+    --val-every 10000 --save-every 5000 --wandb --out Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames3M-16.0M
 
 # 2b. Export for play and sharing: model.safetensors + config.json next to best.pt
 uv run python -m NoFeat.export Models/Weights/SlackFishV-T3/best.pt
@@ -327,7 +338,7 @@ epoch 2: train 0.8233  val MSE 0.7999  val MAE 315 cp  mirrored 309 cp  (27s)
 
 **Colour-swap augmentation:** half of the training positions (`--augment-prob 0.5`) are mirrored with colours, castling and turn swapped and the score negated (`NoFeat/augment.py`, equivalent to python-chess `board.mirror()`). `mirrored` in the log is validation MAE on the colour-swapped validation set. If it's far from the normal MAE, the model treats the two colours differently. SlackFishV-T1-3.25M, trained without augmentation, scores 136 cp as-is and 182 cp mirrored.
 
-Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--warmup-steps`, `--schedule wsd` with `--decay-frac` (flat after warmup, then a linear decay over the last fraction), `--lr-floor` (final LR as a fraction of `--lr`, default 0.1), `--optimizer muon` (Muon for the 2D weight matrices inside the layers, AdamW for embeddings, norms, biases, bias tables and the head; Muon's updates are scaled to AdamW's size, so the same `--lr` and schedule apply), `--arch v4` (64 tokens: the model sees each position from the side to move and puts the castling rights in the rook tokens, so it's colour-symmetric by construction and `--augment-prob` is forced to 0), `--smolgen` (with `--spatial-bias`, on v3 or v4), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb`, `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
+Useful training options: `--limit N`, `--batch-size` (default 1024), `--lr` (3e-4, warmup then cosine decay), `--warmup-steps`, `--schedule wsd` with `--decay-frac` (flat after warmup, then a linear decay over the last fraction), `--lr-floor` (final LR as a fraction of `--lr`, default 0.1), `--optimizer muon` (Muon for the 2D weight matrices inside the layers, AdamW for embeddings, norms, biases, bias tables and the head; Muon's updates are scaled to AdamW's size, so the same `--lr` and schedule apply), `--arch v4` (64 tokens: the model sees each position from the side to move and puts the castling rights in the rook tokens, so it's colour-symmetric by construction and `--augment-prob` is forced to 0), `--smolgen` (with `--spatial-bias`, on v3 or v4), `--d-model`, `--layers`, `--heads`, `--d-ff`, `--dropout`, `--clip`, `--scale`, `--precision` (`auto` picks bf16 on Ampere and newer, fp16 on older GPUs such as the RTX 20 series), `--val-every N` / `--val-subset` (a learning curve within long epochs, stored as `curve` in the checkpoint), `--wandb` (log to Weights & Biases, project `--wandb-project`, default `slackfish-nofeat`: training loss, learning rate, gradient norm and positions/s every 50 steps, the `--val-every` points and each epoch's validation, by source, against the global step; the run is named after `--out`, and a `--resume` into the same `--out` continues the same wandb run, while a new `--out` starts a new one), `--no-compile`. The checkpoint stores the model config and target scale, so `play.py` loads any size without code changes.
 
 **Resuming** (`--resume CHECKPOINT`) continues at the exact step the checkpoint was saved, mid-epoch included: each epoch's order is a seeded permutation of the training positions, so the rest of the epoch is exactly the positions it hasn't seen yet, and later epochs reshuffle. That holds only if everything deciding the permutation is unchanged, so `train.py` refuses to resume when `--data`, `--sources`, `--limit`, `--val-frac`, `--seed` or `--batch-size` differ from the checkpoint's, or the number of training positions does (`ORDER_ARGS`). `--epochs` and the schedule options may change: a larger `--epochs` stretches the schedule, which with WSD keeps a pre-decay checkpoint at its full learning rate until the new end. A small run resumed at step 60 of 100 finished bit-identical (in deterministic mode) to the same run done straight. Snapshots (`scripts/snapshot-checkpoints.sh Models/Weights/NAME &` next to training copies `last.pt` every 20k steps) are what make a pre-decay checkpoint available later.
 
@@ -408,6 +419,7 @@ All NoFeat transformers, 66-token input, AdamW at 3e-4 with warmup and cosine de
 | T4-SB-WSD-LichessGames-6.93M | as T2-SB-WSD-LichessGames on 64 tokens (`--arch v4`), no augmentation | same (828.2M) | win probability (BCE) | none (symmetric) | 1 | 3.5 h (4× 4090, bf16) | 92.3 cp (lichess), 92.9 (games) |
 | **T3-SG64-Muon-LichessGames-16.0M** | V4 (64 tokens), width 384, 8 heads of 48, feed-forward 1536, 8 layers, spatial bias + smolgen, 16.0M; Muon | same (828.2M) | win probability (BCE) | none (symmetric) | 1 | 7.5 h (4× 4090, bf16) | **81.8 cp (lichess), 84.9 (games), 83.4 overall** |
 | T3-SG64-Muon-LichessGames-2ep-16.0M | as T3-SG64-Muon, resumed before its decay for a second epoch | same (828.2M) | win probability (BCE) | none (symmetric) | 2 | +9 h (from step 320k) | 78.4 cp (lichess), 82.9 (games), 80.7 overall |
+| **T3-SG64-Muon-LichessGames3M-16.0M** | as T3-SG64-Muon | Lichess + three months of Lichess games (1,729.3M; shuffled folder, its own validation split) | win probability (BCE) | none (symmetric) | 1 | 15.5 h (4× 4090, bf16) | **83.0 cp (lichess), 74.5 (games), 76.4 overall** |
 
 Val MAE by epoch:
 
@@ -508,6 +520,9 @@ The bias gave a large head start: through ~300k steps it was 13–18 cp ahead, m
 | **the same at equal time, 0.5 s/move, CUDA-graph evaluator** (256 games) | **167.5 / 256 (65%)** | **136 / 63 / 57** | **+111 (+74 to +150)** |
 | T3-SG64-Muon-LichessGames-2ep-16.0M vs T3-SG64-Muon-LichessGames-16.0M (256 games) | 131 / 256 (51%) | 88 / 86 / 82 | +8 (−27 to +43) |
 | the same at equal time, 0.5 s/move (256 games) | 133.5 / 256 (52%) | 87 / 93 / 76 | +15 (−19 to +49) |
+| T3-SG64-Muon-LichessGames3M-16.0M vs T3-SG64-Muon-LichessGames-16.0M (256 games) | 140 / 256 (55%) | 106 / 68 / 82 | +33 (−4 to +70) |
+| **the same at equal time, 0.5 s/move** (256 games) | **157.5 / 256 (62%)** | **105 / 105 / 46** | **+82 (+49 to +115)** |
+| **the same on a 3+2 clock, depth cap 6** (129 games in 1.6 h, three sets of openings) | **77 / 129 (60%)** | **43 / 68 / 18** | **+68 (+28 to +110)** |
 | T2-H8-WSD-LichessGames-6.69M vs T2-SB-WSD-LichessGames-6.97M (256 games) | 138 / 256 (54%) | 108 / 60 / 88 | +27 (−10 to +65) |
 
 The two WSD models only differ in data: the month of Lichess games bought just 1.6 cp on the evaluation-database positions both validate on (96.6 → 95.0), but 187 Elo over the board. The game positions are lopsided (median |eval| 326 cp against 77, from lower-rated play with blunders), which is probably close to what the search meets after a bad move, and what balanced positions people chose to analyse don't cover; that's a hypothesis, not tested. The WSD recipe on its own (T2-SB-WSD-Lichess, same data as before minus the CSVs) is about +115 by the chain of the two matches.
@@ -525,8 +540,8 @@ The 16-game T2-W-All vs T2-W result (−44) looked like a tie; the 128-game matc
 | T2-W-6.41M, depth 2 | 0.3 s | 1320 (8 games) | 1 / 8: very roughly 1000 |
 | T2-W-Lichess-6.41M, depth 2 | 0.5 s | 1320–2100 (24) | **1972 ± 84** |
 | T2-W-Lichess-6.41M, depth 3 | 1 s | 1700–2500 (24) | **2255 ± 80** |
-| T3-SG64-Muon-LichessGames-16.0M (default), depth 2 | 0.5 s | 2500–2900 (32 each) | **~2750** (per-level 2706 ± 142, 2744 ± 121, 2776 ± 128) |
-| T3-SG64-Muon-LichessGames-16.0M (default), depth 4 | 0.5 s | 2900–3100 (32 each) | **~2960** (per-level 2955 ± 122, 2963 ± 130) |
+| T3-SG64-Muon-LichessGames-16.0M (previous default), depth 2 | 0.5 s | 2500–2900 (32 each) | **~2750** (per-level 2706 ± 142, 2744 ± 121, 2776 ± 128) |
+| T3-SG64-Muon-LichessGames-16.0M (previous default), depth 4 | 0.5 s | 2900–3100 (32 each) | **~2960** (per-level 2955 ± 122, 2963 ± 130) |
 
 T2-W-Lichess at depth 3 against each level:
 
@@ -762,6 +777,7 @@ Same T2-W network on both sides unless noted. "Evals" means positions scored by 
 21. **The wins stacked, and a wider model finally paid off.** T3's width with 64 tokens, smolgen and Muon (16.0M) beat the smolgen default by 117 Elo at depth 2 and 111 at equal time: 64 tokens and 8 wider heads bought back the speed a model 1.8× the size would lose. The earlier T3 (same width, AdamW at 3e-4, cosine) had lost to the 6.41M model; Muon and the WSD recipe are the likely difference, though this run doesn't separate them.
 22. **A second pass over the same data helped validation more than play.** Resuming T3 from before its decay for a second epoch (9 h) cut validation error from 83.4 to 80.7 cp with no sign of overfitting (the repeated data held validation flat, then the decay brought it down), but scored only +8 and +15 Elo (both within noise) against the 1-epoch model. A month of new game positions had been worth 1.6 cp and 187 Elo: fresh positions beat repeated ones.
 23. **Pre-shuffle the data once instead of shuffling an index in every process.** Writing the positions in random order once (4.5 minutes for 828M) let training read them in chunks: memory per process fell from 15.3 to 1.6 GB at the same speed, so the data no longer has to fit in RAM, only on disk.
+24. **More data still paid off, and more in play than at depth 2.** Three months of analysed games instead of one (1.73B positions, 2.1×; the evaluation database unchanged, so it fell from 47% to 23% of training) gave +33 Elo at depth 2 but +82 at 0.5 s/move and +68 at 3+2 against the same model on one month, far more than a second epoch over the old data (+8 / +15) for about the same compute. Validation moved the same way: −10 cp on game positions, +1 cp on evaluation-database positions (each on its own held-out split). The gain at depth 2 understated it: compare at equal time.
 
 Ideas not yet tried (more in `TODO.md`): a position-dependent attention bias (smolgen) or a shared relative one, a learning rate scaled to model width, more epochs over the full data, a steeper win-probability curve (`--wp-scale` ~200), true win/draw/loss labels, a better ranking of the opponent's replies for pondering (12% of moves ranked 11th or worse), and fewer, wider attention heads (16 heads of 16 dimensions are small for GPU kernels).
 
@@ -866,13 +882,13 @@ The [Lichess evaluation database](https://database.lichess.org/#evals) (`lichess
 | System memory in use while training | ~66–95 GB | **15–29 GB** |
 | Training speed (steady) | 25.5–27.5 steps/s | 25.5–27.4 steps/s |
 
-So more data only needs disk: 828M positions shuffle in 4.5 minutes into 31 GB. A shuffled folder trains on all of its sources (it's read in order, so one can't be skipped: shuffle only the folders you want), and `--limit N` takes its first N training positions, already a random sample. Each epoch covers every training position once, and a run resumed mid-epoch finished bit-identical to the same run done straight (in deterministic mode).
+So more data only needs disk: 828M positions shuffle in 4.5 minutes into 31 GB, and 1.74B (the evaluation database and three months of games) in 11 minutes into 64 GB; T3 trained on the latter at 15.3 steps/s with ~5 GB of GPU memory per process. A shuffled folder trains on all of its sources (it's read in order, so one can't be skipped: shuffle only the folders you want), and `--limit N` takes its first N training positions, already a random sample. Each epoch covers every training position once, and a run resumed mid-epoch finished bit-identical to the same run done straight (in deterministic mode).
 
 The validation set is a different random sample from the packed folders' (`--val-frac` there takes a seeded permutation), so a model's validation score on one split can't be measured on the other: each model trained on ~99.5% of its data, which includes almost all of the other split's validation positions. Compare models by their own held-out score instead (both splits are random samples of over 4M positions from the same data, so they agree within ~0.1 cp), which `NoFeat.score` computes for any model file on a folder's validation set: `uv run python -m NoFeat.score data/nofeat_lichess_all Models/Weights/NAME/model.safetensors` reproduces the training log's numbers (T3: 83.40 vs 83.39 cp).
 
 ### Lichess games
 
-The monthly [standard games dumps](https://database.lichess.org/#standard_games) (`lichess_db_standard_rated_YYYY-MM.pgn.zst`, CC0; September 2026: 29.2 GB, ~89.6M games) add positions from real play. Only games with Lichess server analysis carry evaluations (~6% of a month; 10% of the first 4M games of September 2026), as a `[%eval 0.17]` / `[%eval #-3]` comment after each move: Stockfish's score of the position after the move, from White's perspective, in pawns, with no depth recorded. Lichess analyses the first 300 plies and fills the first 15 from its cloud evals (the evaluation database above), so `NoFeat.prepare_data --lichess-games` keeps positions from ply 15 on (`--games-min-ply`), skipping checkmates and stalemates. Games without an `[%eval` are skipped by a substring search without being parsed. An analysed game gives ~52 positions; the same position recurs across games (1.6% of them in 4M games, 12% when the opening plies are kept), so the positions are deduplicated, each keeping the mean of its evaluations. They are tagged `lichess_games`. They are lower-rated, messier positions than the evaluation database's: median |eval| 279 cp against 61, 7% forced mates against 16%. A month takes ~15 min on 32 threads.
+The monthly [standard games dumps](https://database.lichess.org/#standard_games) (`lichess_db_standard_rated_YYYY-MM.pgn.zst`, CC0; September 2026: 29.2 GB, ~89.6M games) add positions from real play. Only games with Lichess server analysis carry evaluations (~6% of a month; 10% of the first 4M games of September 2026), as a `[%eval 0.17]` / `[%eval #-3]` comment after each move: Stockfish's score of the position after the move, from White's perspective, in pawns, with no depth recorded. Lichess analyses the first 300 plies and fills the first 15 from its cloud evals (the evaluation database above), so `NoFeat.prepare_data --lichess-games` keeps positions from ply 15 on (`--games-min-ply`), skipping checkmates and stalemates. Games without an `[%eval` are skipped by a substring search without being parsed. An analysed game gives ~52 positions; the same position recurs across games (1.6% of them in 4M games, 12% when the opening plies are kept), so the positions are deduplicated, each keeping the mean of its evaluations. They are tagged `lichess_games`. They are lower-rated, messier positions than the evaluation database's: median |eval| 279 cp against 61, 7% forced mates against 16%. A month takes ~15 min on 32 threads. July and August 2026 encoded together (deduplicated across the two months, not against September or the evaluation database) gave 909.8M positions from 959.3M (5.2% repeats) in 35 min.
 
 ## Retraining V5
 

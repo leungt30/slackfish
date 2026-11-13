@@ -208,6 +208,7 @@ BOTS = {
     "t2-h8-wsd-lichessgames-6.69m": NoFeatSpec("Models/Weights/SlackFishV-T2-H8-WSD-LichessGames-6.69M"),   # as t2-sb-wsd-lichessgames, 8 heads of 32 (a tie)
     "t2-sg-wsd-lichessgames-8.87m": NoFeatSpec("Models/Weights/SlackFishV-T2-SG-WSD-LichessGames-8.87M"),   # as t2-sb-wsd-lichessgames + smolgen (position-dependent attention bias)
     "t3-sg64-muon-lichessgames-16.0m": NoFeatSpec("Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames-16.0M"),   # width 384, 8 heads, 64 tokens (v4), smolgen, Muon
+    "t3-sg64-muon-lichessgames3m-16.0m": NoFeatSpec("Models/Weights/SlackFishV-T3-SG64-Muon-LichessGames3M-16.0M"),   # the same on 3 months of games (1.73B positions)
 }
 
 
@@ -406,6 +407,34 @@ class OpeningBook:
             return None
         weights = np.array([e.weight for e in entries], dtype=float)
         return entries[rng.choice(len(entries), p=weights / weights.sum())].move
+
+
+class LayeredBook:
+    """Several opening books in priority order: the first that has a move for the position
+    plays it (a small prepared book can sit in front of a big general one). Same interface
+    as OpeningBook."""
+
+    def __init__(self, books: list):
+        self.books = books
+
+    def __str__(self):
+        return " > ".join(str(b) for b in self.books)
+
+    def _first(self, board: chess.Board):
+        return next((b for b in self.books if b.covers(board)), None)
+
+    def covers(self, board: chess.Board) -> bool:
+        return self._first(board) is not None
+
+    def pick(self, board: chess.Board, rng: np.random.Generator) -> chess.Move | None:
+        book = self._first(board)
+        return book.pick(board, rng) if book else None
+
+
+def open_books(paths: list[str], max_plies: int = 16):
+    """One OpeningBook for a single path, a LayeredBook (first path has priority) for several."""
+    books = [OpeningBook(p, max_plies=max_plies) for p in paths]
+    return books[0] if len(books) == 1 else LayeredBook(books)
 
 
 class SearchAborted(Exception):
