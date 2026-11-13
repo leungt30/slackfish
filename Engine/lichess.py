@@ -717,11 +717,13 @@ class BotRunner:
                 holding = unstable
                 print(f"connection unstable: no new challenges until {NETWORK_QUIET // 60} minutes without errors"
                       if unstable else "connection stable again: resuming challenges")
-            free = self.free_users() if not self.pending and not self.games and not unstable else None
+            busy_ok = getattr(a, "even_if_busy", False)   # challenge opponents that are in a game too
+            free = self.free_users() if not self.pending and not self.games and not unstable and not busy_ok else None
             with self.lock:
                 if self.pending and time.monotonic() - self.pending[2] > ANSWER_WAIT:   # no answer: offline or ignoring us
                     stale, self.pending = self.pending, None
-                    self.refusals[stale[1]] += 1
+                    if not busy_ok:
+                        self.refusals[stale[1]] += 1
                     print(f"{label(stale[1])} didn't answer; canceling")
                     threading.Thread(target=self.cancel, args=(stale[0],), daemon=True).start()
                 willing = [o for o in self.opponents if self.refusals[o] < 2]
@@ -888,6 +890,8 @@ def main():
     p.add_argument("--rated", action="store_true", help="with --challenge: rated games (default casual)")
     p.add_argument("--casual", action="store_true", help="with --challenge: casual games even if --rated is given "
                                                          "(e.g. after a preset that adds --rated)")
+    p.add_argument("--even-if-busy", action="store_true",
+                   help="challenge listed opponents even while they are in a game; unanswered challenges are not held against them")
     p.add_argument("--color", choices=["white", "black", "random"], default="random",
                    help="with --challenge: the colour we ask for (default random); the opponent may decline it")
     o = sub.add_parser("opponents", help="list online bots to challenge (what --challenge auto picks)")
