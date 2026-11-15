@@ -84,6 +84,7 @@ TABLEBASE_PIECES = 7
 # Control files (scripts/lichess-bot.sh pause / resume / stop): checked twice a second
 PAUSE_FILE = os.path.join(ROOT, "logs", "lichess.pause")   # finish games in progress, then start none
 STOP_FILE = os.path.join(ROOT, "logs", "lichess.stop")     # ... and exit once none is in progress
+BUSY_RETRY = 300   # --even-if-busy: seconds to leave an opponent alone after it didn't answer
 ANSWER_WAIT = 30   # seconds an idle, online opponent gets to accept a challenge before we cancel it
 NETWORK_QUIET = 300   # seconds without a connection error before challenging or accepting a game
 GIVE_UP_MARGIN = 120   # keep reconnecting to a game this long past our clock running out
@@ -532,6 +533,7 @@ class BotRunner:
         self.pending = None    # (challenge or game id, opponent, sent at) while waiting for an answer
         self.accepted = {}     # incoming challenge id -> accepted at, until its game starts (holds a slot)
         self.free, self.free_at, self.waiting_note = None, -1e9, 0.0
+        self.hold_until = {}   # opponent -> monotonic time before which --even-if-busy doesn't ask again
         self.refusals = defaultdict(int)   # opponent -> declines / no answers in a row
         self.challenged = set()            # game ids from our own challenges
         self.started = 0                   # our challenges that became games
@@ -722,7 +724,9 @@ class BotRunner:
             with self.lock:
                 if self.pending and time.monotonic() - self.pending[2] > ANSWER_WAIT:   # no answer: offline or ignoring us
                     stale, self.pending = self.pending, None
-                    if not busy_ok:
+                    if busy_ok:
+                        self.hold_until[stale[1]] = time.monotonic() + BUSY_RETRY
+                    else:
                         self.refusals[stale[1]] += 1
                     print(f"{label(stale[1])} didn't answer; canceling")
                     threading.Thread(target=self.cancel, args=(stale[0],), daemon=True).start()
@@ -741,7 +745,8 @@ class BotRunner:
                     for _ in range(len(self.opponents)):   # next willing opponent that is online and not in a game
                         cand = self.opponents[self.turn % len(self.opponents)]
                         self.turn += 1
-                        if self.refusals[cand] < 2 and (cand[0] == "ai" or free is None or cand[1] in free):
+                        if (self.refusals[cand] < 2 and time.monotonic() >= self.hold_until.get(cand, 0)
+                                and (cand[0] == "ai" or free is None or cand[1] in free)):
                             opponent = cand
                             break
                     if opponent:
@@ -890,6 +895,7 @@ def main():
     p.add_argument("--rated", action="store_true", help="with --challenge: rated games (default casual)")
     p.add_argument("--casual", action="store_true", help="with --challenge: casual games even if --rated is given "
                                                          "(e.g. after a preset that adds --rated)")
+    p.add_argument("--ipv4-only", action="store_true", help="connect to Lichess over IPv4 only")
     p.add_argument("--even-if-busy", action="store_true",
                    help="challenge listed opponents even while they are in a game; unanswered challenges are not held against them")
     p.add_argument("--color", choices=["white", "black", "random"], default="random",
@@ -900,6 +906,11 @@ def main():
                    help="their rating at that speed (default 1700-2100)")
     o.add_argument("--count", type=int, default=20)
     args = parser.parse_args()
+    if getattr(args, "ipv4_only", False):   # resolve Lichess to IPv4 addresses only (testing whether IPv6 causes the stalls)
+        import socket
+        import urllib3.util.connection
+        urllib3.util.connection.allowed_gai_family = lambda: socket.AF_INET
+        print("network: IPv4 only")
     if getattr(args, "casual", False):
         args.rated = False
 
