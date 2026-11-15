@@ -43,6 +43,7 @@ import time
 
 import chess
 import chess.engine
+import chess.pgn
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -101,6 +102,22 @@ def deepmind_command(spec):
             "--precision", precision or "fp16"]
 
 
+def save_game(board, opening, bot_white, result):
+    """With MATCH_PGN_DIR set: write the finished game there as a PGN (one file per game, from any worker)."""
+    folder = os.environ.get("MATCH_PGN_DIR")
+    if not folder:
+        return
+    os.makedirs(folder, exist_ok=True)
+    game = chess.pgn.Game.from_board(board)
+    d, od = getattr(_bot, "depth", "?"), getattr(_opponent, "depth", "?")
+    game.headers.update({"White": f"bot d{d}" if bot_white else f"opponent d{od}",
+                         "Black": f"opponent d{od}" if bot_white else f"bot d{d}", "Result": result,
+                         "Opening": f"{len(opening.move_stack)} plies from the book"})
+    name = f"{os.getpid()}-{int(time.time() * 1000)}.pgn"
+    with open(os.path.join(folder, name), "w") as f:
+        print(game, file=f, end="\n\n")
+
+
 def play(task):
     """One game. Returns (level or None, bot's score)."""
     opening, bot_white, level, movetime, clock = task
@@ -117,6 +134,7 @@ def play(task):
                 return player.play(board, chess.engine.Limit(time=budget), game=(opening.epd(), bot_white, level)).move
             return player.search(board, movetime=budget)[0]
         result, _ = play_clocked(board, choose, clock, MAX_MOVES)
+        save_game(board, opening, bot_white, result)
         return level, score(result, chess.WHITE if bot_white else chess.BLACK)
     while not game_over(board) and board.fullmove_number <= MAX_MOVES:
         if (board.turn == chess.WHITE) == bot_white:
@@ -127,6 +145,7 @@ def play(task):
             move = _opponent.choose_move(board)
         board.push(move)
     outcome = board.outcome(claim_draw=game_over(board))
+    save_game(board, opening, bot_white, outcome.result() if outcome else "*")
     return level, score(outcome.result() if outcome else "*", chess.WHITE if bot_white else chess.BLACK)
 
 
