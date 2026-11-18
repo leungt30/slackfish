@@ -55,7 +55,9 @@ class NoFeatEvaluator:
         self.graphs = {}
         self.lock = threading.Lock()   # the graphs share input/output buffers (pondering is a thread)
         if self.device.type == "cuda" and os.environ.get("SLACKFISH_CUDA_GRAPHS", "1") != "0":
-            self._record_graphs()
+            # streams and graphs belong to the current GPU, which isn't self.device's on cuda:1+
+            with torch.cuda.device(self.device):
+                self._record_graphs()
 
     @torch.no_grad()
     def _record_graphs(self):
@@ -72,7 +74,8 @@ class NoFeatEvaluator:
                     self.model(*inputs)
             torch.cuda.current_stream().wait_stream(stream)
             graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, pool=pool, capture_error_mode="thread_local"):
+            # its own capture stream: torch.cuda.graph's default one is made once, on whichever GPU was current
+            with torch.cuda.graph(graph, pool=pool, stream=stream, capture_error_mode="thread_local"):
                 output = self.model(*inputs)
             pool = graph.pool()
             self.graphs[size] = (graph, inputs, output)
@@ -87,7 +90,7 @@ class NoFeatEvaluator:
             return pred.float().cpu().numpy() * self.scale
         out = np.empty(len(boards), dtype=np.float32)
         largest = GRAPH_SIZES[-1]
-        with self.lock:
+        with self.lock, torch.cuda.device(self.device):
             for start in range(0, len(boards), largest):
                 end = min(start + largest, len(boards))
                 n = end - start

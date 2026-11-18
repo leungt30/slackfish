@@ -22,7 +22,7 @@ scripts/setup-deepmind.sh). It moves after one forward pass, so --movetime doesn
 deepmind:270M:fp32 runs it in full precision (same moves, slower). It's GPU-bound, so use
 --workers 2 at most: four DeepMind processes together were no faster than one.
 
-    uv run python Engine/match.py t3-sg64-muon-lichessgames-16.0m deepmind:270M --depth 4 --openings 16 --workers 2
+    uv run python Engine/match.py t3-sg64-muon-lichessgames3m-16.0m deepmind:270M --depth 4 --openings 16 --workers 2
 
 Bot against bot at equal time instead of equal depth (--bot-movetime: both search for that
 many seconds per move), for changes that trade evaluation quality for speed; --weights /
@@ -30,7 +30,7 @@ many seconds per move), for changes that trade evaluation quality for speed; --w
 name without registering it; --gpus spreads the workers over several GPUs, which also
 keeps timed searches from slowing each other down on a shared GPU:
 
-    uv run python Engine/match.py t3-sg64-muon-lichessgames-16.0m t3-sg64-muon-lichessgames-16.0m \\
+    uv run python Engine/match.py t3-sg64-muon-lichessgames3m-16.0m t3-sg64-muon-lichessgames3m-16.0m \\
         --weights runs/new/best.pt --bot-movetime 0.5 --openings 128 --workers 16 --gpus 4
 """
 import argparse
@@ -43,6 +43,7 @@ import time
 
 import chess
 import chess.engine
+import chess.pgn
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -101,6 +102,22 @@ def deepmind_command(spec):
             "--precision", precision or "fp16"]
 
 
+def save_game(board, opening, bot_white, result):
+    """With MATCH_PGN_DIR set: write the finished game there as a PGN (one file per game, from any worker)."""
+    folder = os.environ.get("MATCH_PGN_DIR")
+    if not folder:
+        return
+    os.makedirs(folder, exist_ok=True)
+    game = chess.pgn.Game.from_board(board)
+    d, od = getattr(_bot, "depth", "?"), getattr(_opponent, "depth", "?")
+    game.headers.update({"White": f"bot d{d}" if bot_white else f"opponent d{od}",
+                         "Black": f"opponent d{od}" if bot_white else f"bot d{d}", "Result": result,
+                         "Opening": f"{len(opening.move_stack)} plies from the book"})
+    name = f"{os.getpid()}-{int(time.time() * 1000)}.pgn"
+    with open(os.path.join(folder, name), "w") as f:
+        print(game, file=f, end="\n\n")
+
+
 def play(task):
     """One game. Returns (level or None, bot's score)."""
     opening, bot_white, level, movetime, clock = task
@@ -117,6 +134,7 @@ def play(task):
                 return player.play(board, chess.engine.Limit(time=budget), game=(opening.epd(), bot_white, level)).move
             return player.search(board, movetime=budget)[0]
         result, _ = play_clocked(board, choose, clock, MAX_MOVES)
+        save_game(board, opening, bot_white, result)
         return level, score(result, chess.WHITE if bot_white else chess.BLACK)
     while not game_over(board) and board.fullmove_number <= MAX_MOVES:
         if (board.turn == chess.WHITE) == bot_white:
@@ -127,6 +145,7 @@ def play(task):
             move = _opponent.choose_move(board)
         board.push(move)
     outcome = board.outcome(claim_draw=game_over(board))
+    save_game(board, opening, bot_white, outcome.result() if outcome else "*")
     return level, score(outcome.result() if outcome else "*", chess.WHITE if bot_white else chess.BLACK)
 
 

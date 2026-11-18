@@ -1,7 +1,7 @@
 """
 Round-robin between several bots on a clock, with one combined rating fit.
 
-    uv run python Engine/tournament.py t3-sg64-muon-lichessgames-16.0m t2-w-6.41m t1-3.25m \\
+    uv run python Engine/tournament.py t3-sg64-muon-lichessgames3m-16.0m t2-w-6.41m t1-3.25m \\
         deepmind:270M --clock 1+1 --workers 4 --out logs/tournament/bullet.jsonl
 
 Runs until stopped (Ctrl-C, or --games N). Each task is one book opening played twice
