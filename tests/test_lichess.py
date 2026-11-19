@@ -309,6 +309,17 @@ class SeriesTest(LichessTest):
         self.assertIsNone(runner.halted)
         self.assertEqual(runner.results["Opp"], [0.0])
 
+    def test_only_online_idle_opponents_are_challenged(self):
+        reply = [{"name": "Free", "online": True}, {"name": "Busy", "online": True, "playing": True},
+                 {"name": "Gone", "id": "gone"}]
+        li = FakeLichess()
+        li._request = lambda *a, **k: types.SimpleNamespace(raise_for_status=lambda: None, json=lambda: reply)
+        runner = lichess.BotRunner(li, runner_args(challenge=["Free", "Busy", "Gone"]))
+        self.assertEqual(runner.free_users(), {"Free"})
+        li._request = lambda *a, **k: (_ for _ in ()).throw(lichess.requests.ConnectionError())
+        runner.free_at = -1e9
+        self.assertIsNone(runner.free_users())   # Lichess can't say: don't block challenges
+
     def test_series_halts_after_a_failed_search_or_lost_connection(self):
         self.assertIn("search failed", self.finished(search_failed=True).halted)
         self.assertIn("connection", self.finished(abandoned=True).halted)
